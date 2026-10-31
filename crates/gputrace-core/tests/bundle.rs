@@ -217,3 +217,72 @@ fn records_carry_arguments_handle_bindings_and_payload_refs() {
         payload
     );
 }
+
+#[test]
+fn many_threads_write_independent_segments_through_one_shared_blob_store() {
+    const THREADS: u64 = 8;
+    const CALLS: u64 = 50;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("trace");
+    let writer = BundleWriter::create(&root, cuda_capture()).unwrap();
+
+    std::thread::scope(|scope| {
+        for thread in 0..THREADS {
+            let writer = &writer;
+            scope.spawn(move || {
+                let shared = writer.blobs().put(b"module image shared by all").unwrap();
+                let mut segment = writer.open_segment(ThreadId(thread)).unwrap();
+                for seq in 0..CALLS {
+                    let unique = writer
+                        .blobs()
+                        .put(format!("payload {thread}").as_bytes())
+                        .unwrap();
+                    segment
+                        .write(&CallRecord {
+                            payloads: vec![
+                                PayloadRef {
+                                    role: "module_image".into(),
+                                    blob: shared.clone(),
+                                    len: 26,
+                                },
+                                PayloadRef {
+                                    role: "h2d".into(),
+                                    blob: unique,
+                                    len: 0,
+                                },
+                            ],
+                            ..CallRecord::new("cuLaunchKernel", seq, seq, 0)
+                        })
+                        .unwrap();
+                }
+                segment.finish().unwrap();
+            });
+        }
+    });
+    writer.finish().unwrap();
+
+    let bundle = TraceBundle::open(&root).unwrap();
+    assert_eq!(bundle.threads().len() as u64, THREADS);
+    for summary in bundle.threads() {
+        assert_eq!(summary.records, CALLS);
+        assert_eq!(
+            bundle.read_segment(summary.thread).unwrap().len() as u64,
+            CALLS
+        );
+    }
+
+    let blobs: Vec<_> = std::fs::read_dir(root.join("blobs"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        blobs.len() as u64,
+        THREADS + 1,
+        "one shared module image plus one payload per thread, got {blobs:?}"
+    );
+    assert!(
+        blobs.iter().all(|name| !name.starts_with('.')),
+        "no staging files should survive: {blobs:?}"
+    );
+}

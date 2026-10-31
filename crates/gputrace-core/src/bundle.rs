@@ -17,6 +17,8 @@ const MANIFEST_FILE: &str = "manifest.json";
 const SEGMENTS_DIR: &str = "segments";
 const BLOBS_DIR: &str = "blobs";
 
+static STAGING_SEQ: AtomicU64 = AtomicU64::new(0);
+
 fn segment_name(thread: ThreadId) -> String {
     format!("{SEGMENTS_DIR}/thread-{}.seg", thread.0)
 }
@@ -103,9 +105,15 @@ impl BlobStore {
         if path.exists() {
             return Ok(id);
         }
-        // Publish via rename so a concurrent reader never sees a half-written
-        // blob and two threads racing on the same payload cannot interleave.
-        let staging = self.dir.join(format!(".{}.partial", id.0));
+        // Publish via rename so a reader never sees a half-written blob. The
+        // staging name must be unique per attempt: two threads storing the
+        // same payload would otherwise share it and the loser's rename would
+        // find the file already consumed.
+        let staging = self.dir.join(format!(
+            ".{}.{}.partial",
+            id.0,
+            STAGING_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
         fs::write(&staging, payload).map_err(io(&staging))?;
         fs::rename(&staging, &path).map_err(io(&path))?;
         Ok(id)
