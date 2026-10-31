@@ -11,3 +11,6 @@ crate-type = ["cdylib"]
 [dependencies]
 gputrace-core.workspace = true
 libloading.workspace = true
+
+[dev-dependencies]
+gputrace-testkit = { path = "../gputrace-testkit" }

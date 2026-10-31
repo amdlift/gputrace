@@ -254,6 +254,7 @@ name = "gputrace-shim"
 version = "0.1.0"
 dependencies = [
  "gputrace-core",
+ "gputrace-testkit",
  "libloading",
 ]
 

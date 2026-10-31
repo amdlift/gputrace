@@ -9,4 +9,6 @@
 
 pub mod real;
 
-pub use real::{DEFAULT_LIBCUDA, LIBCUDA_OVERRIDE_ENV, real_library, real_library_path};
+pub use real::{
+    DEFAULT_LIBCUDA, LIBCUDA_OVERRIDE_ENV, real_library, real_library_path, real_symbol,
+};
