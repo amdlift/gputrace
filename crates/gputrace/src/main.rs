@@ -22,7 +22,12 @@ struct Cli {
 enum Command {
     /// Run a target under the interposer and record a trace bundle.
     Capture {
-        /// Target GPU (passed through as CUDA_VISIBLE_DEVICES).
+        /// Confine the target to one GPU (sets CUDA_VISIBLE_DEVICES).
+        ///
+        /// Prefer a GPU that does not drive your display. Capturing a heavy
+        /// workload on the display GPU can freeze the desktop or trigger an
+        /// Xid reset that tears down every context on it, this capture
+        /// included. See docs/choosing-a-capture-gpu.md.
         #[arg(long)]
         device: Option<String>,
         /// Also capture device->host golden outputs (L3).

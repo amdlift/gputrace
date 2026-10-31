@@ -1,6 +1,7 @@
 use gputrace_core::{
-    ArgValue, Argument, BundleError, BundleWriter, CallRecord, CaptureConfig, Fidelity,
-    HandleBinding, HandleId, HandleRole, PayloadRef, SCHEMA_VERSION, ThreadId, TraceBundle,
+    ArgValue, Argument, BundleError, BundleWriter, CallRecord, CaptureConfig, ComputeCapability,
+    DeviceSummary, Environment, Fidelity, HandleBinding, HandleId, HandleRole, PayloadRef,
+    SCHEMA_VERSION, ThreadId, TraceBundle,
 };
 
 #[test]
@@ -308,4 +309,79 @@ fn a_bundle_written_by_a_newer_schema_is_refused() {
         matches!(error, BundleError::UnsupportedSchema { found, .. } if found == SCHEMA_VERSION + 1),
         "expected an unsupported-schema error, got {error}"
     );
+}
+
+#[test]
+fn the_environment_round_trips_through_the_manifest() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("trace");
+
+    let environment = Environment {
+        driver_version: Some(13040),
+        devices: vec![DeviceSummary {
+            ordinal: 1,
+            compute_capability: Some(ComputeCapability { major: 8, minor: 6 }),
+            records: 42,
+        }],
+    };
+    BundleWriter::create(&root, cuda_capture())
+        .unwrap()
+        .finish_with(environment.clone())
+        .unwrap();
+
+    assert_eq!(
+        TraceBundle::open(&root).unwrap().manifest().environment,
+        environment
+    );
+}
+
+/// A driver that will not answer leaves the field empty rather than being
+/// guessed at: a replay warning on an environment nobody measured would be
+/// worse than one that knows it has nothing to compare.
+#[test]
+fn an_environment_the_driver_would_not_describe_stays_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("trace");
+
+    BundleWriter::create(&root, cuda_capture())
+        .unwrap()
+        .finish_with(Environment {
+            driver_version: None,
+            devices: vec![DeviceSummary {
+                ordinal: 0,
+                compute_capability: None,
+                records: 3,
+            }],
+        })
+        .unwrap();
+
+    let bundle = TraceBundle::open(&root).unwrap();
+    let environment = &bundle.manifest().environment;
+    assert_eq!(environment.driver_version, None);
+    assert_eq!(environment.devices[0].compute_capability, None);
+}
+
+/// Describing the environment added a manifest field, it did not change how
+/// anything already written is read, so bundles taken before it must open.
+#[test]
+fn a_manifest_written_before_the_environment_field_still_opens() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("trace");
+    BundleWriter::create(&root, cuda_capture())
+        .unwrap()
+        .finish()
+        .unwrap();
+
+    let path = root.join("manifest.json");
+    let older: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap())
+        .map(|mut manifest: serde_json::Value| {
+            manifest.as_object_mut().unwrap().remove("environment");
+            manifest
+        })
+        .unwrap();
+    assert!(older.get("environment").is_none());
+    std::fs::write(&path, serde_json::to_string_pretty(&older).unwrap()).unwrap();
+
+    let bundle = TraceBundle::open(&root).unwrap();
+    assert_eq!(bundle.manifest().environment, Environment::default());
 }

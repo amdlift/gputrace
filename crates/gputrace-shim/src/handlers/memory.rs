@@ -109,6 +109,48 @@ macro_rules! copy_to_device_shims {
     )*};
 }
 
+/// `cuMemcpyDtoH`, the only call in a trace that says what the GPU answered.
+///
+/// Its payload is taken *after* forwarding, the mirror image of a
+/// host-to-device copy: until the driver has run, the destination still holds
+/// whatever the caller last left there. A failed copy leaves it untouched
+/// altogether, so there is no answer to keep.
+macro_rules! copy_to_host_shims {
+    ($($symbol:ident($pointer:ty, $size:ty);)*) => {$(
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $symbol(
+            dst_host: *mut c_void,
+            src_device: $pointer,
+            byte_count: $size,
+        ) -> CUresult {
+            static REAL: DriverFn<
+                unsafe extern "C" fn(*mut c_void, $pointer, $size) -> CUresult,
+            > = DriverFn::new(concat!(stringify!($symbol), "\0").as_bytes());
+
+            let source = u64::from(src_device);
+            let call = recorder::begin(stringify!($symbol));
+            let result = match REAL.get() {
+                Some(real) => unsafe { real(dst_host, src_device, byte_count) },
+                None => CUDA_ERROR_NOT_FOUND,
+            };
+            let deep = call
+                .deep(vec![
+                    Argument::new("dstHost", ArgValue::HostPtr(dst_host as usize as u64)),
+                    Argument::new("srcDevice", ArgValue::DevicePtr(source)),
+                    Argument::new("ByteCount", RecordArg::record(&byte_count)),
+                ])
+                .consumes(handle_id(HandleKind::DevicePtr, source));
+            let deep = if result == CUDA_SUCCESS {
+                unsafe { deep.output(GOLDEN_OUTPUT, dst_host.cast::<u8>(), byte_count as usize) }
+            } else {
+                deep
+            };
+            call.finish_deep(result, deep);
+            result
+        }
+    )*};
+}
+
 /// The stream-ordered allocator. It is the same allocation a replay has to
 /// remap as the synchronous one, and it is also an operation in a stream's
 /// order, so it records both: the pointer it produced and the stream it was
@@ -215,6 +257,9 @@ macro_rules! copy_to_device_async_shims {
 
 /// What a staged host-to-device buffer is called in a record's payloads.
 pub(crate) const HOST_TO_DEVICE: &str = "host_to_device";
+/// What a captured device-to-host result is called. The name a later
+/// oracle's differential signal looks for (GLOSSARY: golden output).
+pub(crate) const GOLDEN_OUTPUT: &str = "golden_output";
 
 alloc_shims! {
     cuMemAlloc(c_uint, c_uint);
@@ -230,6 +275,12 @@ copy_to_device_shims! {
     cuMemcpyHtoD(c_uint, c_uint);
     cuMemcpyHtoD_v2(u64, usize);
     cuMemcpyHtoD_v2_ptds(u64, usize);
+}
+
+copy_to_host_shims! {
+    cuMemcpyDtoH(c_uint, c_uint);
+    cuMemcpyDtoH_v2(u64, usize);
+    cuMemcpyDtoH_v2_ptds(u64, usize);
 }
 
 alloc_async_shims! {

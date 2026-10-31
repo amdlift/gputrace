@@ -140,11 +140,45 @@ pub struct ThreadSummary {
     pub records: u64,
 }
 
+/// A GPU's architecture generation, as the driver reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputeCapability {
+    pub major: u32,
+    pub minor: u32,
+}
+
+/// One GPU the capture's records targeted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceSummary {
+    /// The ordinal as the captured process saw it, which is what
+    /// [`CallRecord::device`] holds. A capture that selected a GPU with
+    /// `CUDA_VISIBLE_DEVICES` renumbers it, so this need not be the ordinal
+    /// the same GPU has outside that process.
+    pub ordinal: u32,
+    pub compute_capability: Option<ComputeCapability>,
+    pub records: u64,
+}
+
+/// What the capture ran against. A bundle outlives the machine it was taken
+/// on, so a consumer warns on a mismatch against this (never guarantees
+/// portability — see the spec). `None` is an answer the driver would not
+/// give: an unknown environment is recorded as unknown, never invented.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Environment {
+    pub driver_version: Option<u32>,
+    pub devices: Vec<DeviceSummary>,
+}
+
 /// The human-readable index of a trace bundle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     pub schema_version: u32,
     pub capture: CaptureConfig,
+    /// Absent from bundles written before capture described its environment,
+    /// which is why it defaults rather than failing the read.
+    #[serde(default)]
+    pub environment: Environment,
     pub threads: Vec<ThreadSummary>,
 }
 
@@ -200,6 +234,14 @@ impl BundleWriter {
     }
 
     pub fn finish(self) -> Result<()> {
+        self.finish_with(Environment::default())
+    }
+
+    /// Write the manifest, describing what the capture ran against. The
+    /// environment arrives here rather than at `create` because answering
+    /// it means asking the driver, which capture only does once it has
+    /// something to describe.
+    pub fn finish_with(self, environment: Environment) -> Result<()> {
         let threads = self
             .threads
             .into_inner()
@@ -214,6 +256,7 @@ impl BundleWriter {
         let manifest = Manifest {
             schema_version: SCHEMA_VERSION,
             capture: self.capture,
+            environment,
             threads,
         };
         let path = self.root.join(MANIFEST_FILE);

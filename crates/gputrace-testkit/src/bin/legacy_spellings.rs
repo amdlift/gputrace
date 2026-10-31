@@ -14,6 +14,8 @@ cuda_api! {
         fn cuMemAlloc(*mut c_uint, c_uint) -> c_int;
         fn cuMemcpyHtoD(c_uint, *const c_void, c_uint) -> c_int;
         fn cuMemcpyHtoD_v2_ptds(u64, *const c_void, usize) -> c_int;
+        fn cuMemcpyDtoH(*mut c_void, c_uint, c_uint) -> c_int;
+        fn cuMemcpyDtoH_v2_ptds(*mut c_void, u64, usize) -> c_int;
         fn cuMemFree(c_uint) -> c_int;
         fn cuCtxDestroy(*mut c_void) -> c_int;
     }
@@ -42,6 +44,27 @@ fn main() {
             (cuda.cuMemcpyHtoD_v2_ptds)(u64::from(dptr), PAYLOAD.as_ptr().cast(), PAYLOAD.len()),
             0
         );
+
+        let mut read_back = [0u8; PAYLOAD.len()];
+        assert_eq!(
+            (cuda.cuMemcpyDtoH)(
+                read_back.as_mut_ptr().cast(),
+                dptr,
+                read_back.len() as c_uint
+            ),
+            0
+        );
+        assert_eq!(read_back, PAYLOAD);
+        read_back.fill(0);
+        assert_eq!(
+            (cuda.cuMemcpyDtoH_v2_ptds)(
+                read_back.as_mut_ptr().cast(),
+                u64::from(dptr),
+                read_back.len()
+            ),
+            0
+        );
+        assert_eq!(read_back, PAYLOAD);
 
         assert_eq!((cuda.cuMemFree)(dptr), 0);
         assert_eq!((cuda.cuCtxDestroy)(context), 0);

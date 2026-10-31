@@ -8,6 +8,7 @@
 //! curated subset. Both are written against the one pattern in [`shim`].
 
 mod dispatch;
+mod environment;
 mod generated;
 mod handlers;
 pub mod real;

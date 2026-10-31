@@ -1,5 +1,22 @@
 use gputrace_testkit::{Harness, target_bin};
 
+/// What the stub answered, as a test that cares about the *target* states it:
+/// the target's own calls, then capture's.
+///
+/// Capture asks the driver for a version, and for the compute capability of
+/// each device the trace named, so the manifest can say what the bundle was
+/// taken against. It asks once per process, after the target's last call, and
+/// never from a shim — so these are the interposer's calls, not the target's.
+fn then_describing_the_environment(target: &[&str], devices: usize) -> Vec<String> {
+    target
+        .iter()
+        .copied()
+        .chain(["cuDriverGetVersion"])
+        .chain(std::iter::repeat_n("cuDeviceGetAttribute", 2 * devices))
+        .map(str::to_owned)
+        .collect()
+}
+
 #[test]
 fn a_targets_calls_reach_the_stub_driver() {
     let harness = Harness::new().expect("harness");
@@ -10,12 +27,15 @@ fn a_targets_calls_reach_the_stub_driver() {
     assert!(run.status().success(), "target failed: {}", run.stderr());
     assert_eq!(
         run.stub_calls(),
-        [
-            "cuInit",
-            "cuDriverGetVersion",
-            "cuDeviceGetCount",
-            "cuDeviceGetName"
-        ]
+        then_describing_the_environment(
+            &[
+                "cuInit",
+                "cuDriverGetVersion",
+                "cuDeviceGetCount",
+                "cuDeviceGetName"
+            ],
+            1,
+        )
     );
 }
 
@@ -46,16 +66,19 @@ fn the_stub_round_trips_a_copy_through_device_memory() {
     );
     assert_eq!(
         run.stub_calls(),
-        [
-            "cuInit",
-            "cuDeviceGet",
-            "cuCtxCreate_v4",
-            "cuMemAlloc_v2",
-            "cuMemcpyHtoD_v2",
-            "cuMemcpyDtoH_v2",
-            "cuMemFree_v2",
-            "cuCtxDestroy_v2",
-        ]
+        then_describing_the_environment(
+            &[
+                "cuInit",
+                "cuDeviceGet",
+                "cuCtxCreate_v4",
+                "cuMemAlloc_v2",
+                "cuMemcpyHtoD_v2",
+                "cuMemcpyDtoH_v2",
+                "cuMemFree_v2",
+                "cuCtxDestroy_v2",
+            ],
+            1,
+        )
     );
 }
 
@@ -81,19 +104,22 @@ fn the_stub_binds_kernels_to_the_module_that_defines_them() {
     );
     assert_eq!(
         run.stub_calls(),
-        [
-            "cuInit",
-            "cuDeviceGet",
-            "cuCtxCreate_v4",
-            "cuModuleLoadData",
-            "cuModuleGetFunction",
-            "cuModuleGetFunction",
-            "cuModuleGetFunction",
-            "cuModuleGetFunction",
-            "cuLaunchKernel",
-            "cuModuleUnload",
-            "cuLaunchKernel",
-        ]
+        then_describing_the_environment(
+            &[
+                "cuInit",
+                "cuDeviceGet",
+                "cuCtxCreate_v4",
+                "cuModuleLoadData",
+                "cuModuleGetFunction",
+                "cuModuleGetFunction",
+                "cuModuleGetFunction",
+                "cuModuleGetFunction",
+                "cuLaunchKernel",
+                "cuModuleUnload",
+                "cuLaunchKernel",
+            ],
+            1,
+        )
     );
 }
 
@@ -118,25 +144,28 @@ fn the_stub_orders_events_across_streams() {
     );
     assert_eq!(
         run.stub_calls(),
-        [
-            "cuInit",
-            "cuDeviceGet",
-            "cuCtxCreate_v4",
-            "cuStreamCreate",
-            "cuStreamCreate",
-            "cuEventCreate",
-            "cuEventCreate",
-            "cuEventRecord",
-            "cuStreamWaitEvent",
-            "cuEventRecord",
-            "cuStreamSynchronize",
-            "cuStreamSynchronize",
-            "cuEventSynchronize",
-            "cuEventElapsedTime_v2",
-            "cuEventDestroy_v2",
-            "cuStreamDestroy_v2",
-            "cuEventRecord",
-        ]
+        then_describing_the_environment(
+            &[
+                "cuInit",
+                "cuDeviceGet",
+                "cuCtxCreate_v4",
+                "cuStreamCreate",
+                "cuStreamCreate",
+                "cuEventCreate",
+                "cuEventCreate",
+                "cuEventRecord",
+                "cuStreamWaitEvent",
+                "cuEventRecord",
+                "cuStreamSynchronize",
+                "cuStreamSynchronize",
+                "cuEventSynchronize",
+                "cuEventElapsedTime_v2",
+                "cuEventDestroy_v2",
+                "cuStreamDestroy_v2",
+                "cuEventRecord",
+            ],
+            1,
+        )
     );
 }
 
@@ -162,16 +191,19 @@ fn the_stub_serves_the_dispatch_table() {
     );
     assert_eq!(
         run.stub_calls(),
-        [
-            "cuInit",
-            "cuGetProcAddress_v2",
-            "cuDeviceGetCount",
-            "cuGetProcAddress_v2",
-            "cuGetProcAddress_v2",
-            "cuGetProcAddress_v2",
-            "cuGetProcAddress_v2",
-            "cuGetProcAddress",
-        ]
+        then_describing_the_environment(
+            &[
+                "cuInit",
+                "cuGetProcAddress_v2",
+                "cuDeviceGetCount",
+                "cuGetProcAddress_v2",
+                "cuGetProcAddress_v2",
+                "cuGetProcAddress_v2",
+                "cuGetProcAddress_v2",
+                "cuGetProcAddress",
+            ],
+            0,
+        )
     );
 }
 

@@ -202,7 +202,7 @@ mod record_path {
 
     /// Everything an intercepted call runs through, from entering a shim to
     /// handing a filled buffer to the writer.
-    const ON_THE_RECORD_PATH: [&str; 15] = [
+    const ON_THE_RECORD_PATH: [&str; 17] = [
         "begin",
         "finish",
         "finish_deep",
@@ -210,6 +210,8 @@ mod record_path {
         "deep",
         "binds",
         "payload",
+        "output",
+        "stage",
         "next_seq",
         "push",
         "flush",

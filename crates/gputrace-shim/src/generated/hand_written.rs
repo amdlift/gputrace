@@ -33,6 +33,9 @@ macro_rules! pass_through {
     (fn cuMemcpyHtoD $($rest:tt)*) => {};
     (fn cuMemcpyHtoD_v2 $($rest:tt)*) => {};
     (fn cuMemcpyHtoD_v2_ptds $($rest:tt)*) => {};
+    (fn cuMemcpyDtoH $($rest:tt)*) => {};
+    (fn cuMemcpyDtoH_v2 $($rest:tt)*) => {};
+    (fn cuMemcpyDtoH_v2_ptds $($rest:tt)*) => {};
     (fn cuMemAllocAsync $($rest:tt)*) => {};
     (fn cuMemAllocAsync_ptsz $($rest:tt)*) => {};
     (fn cuMemFreeAsync $($rest:tt)*) => {};
