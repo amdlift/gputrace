@@ -307,8 +307,9 @@ fn drain_to_bundle(queue: &Queue, bundle: BundleWriter) {
     let mut segments: HashMap<ThreadId, SegmentWriter> = HashMap::new();
     let outcome = (|| -> gputrace_core::bundle::Result<()> {
         loop {
-            // Read the flag before draining: anything queued before shutdown
-            // was requested is in the batch this pass takes.
+            // Read the flag before draining: shutdown queues every thread's
+            // buffer and only then sets it, so anything that existed when the
+            // process began exiting is in the batch this pass takes.
             let shutting_down = queue.shutdown.load(Ordering::Acquire);
             let chunks = queue.drain();
             let idle = chunks.is_empty();
@@ -321,10 +322,13 @@ fn drain_to_bundle(queue: &Queue, bundle: BundleWriter) {
                     segment.write(record)?;
                 }
             }
+            if shutting_down {
+                // Threads that are still recording keep queueing buffers, so
+                // draining until the queue runs dry would keep a process with
+                // a busy thread from ever leaving `exit`.
+                return Ok(());
+            }
             if idle {
-                if shutting_down {
-                    return Ok(());
-                }
                 thread::park_timeout(WRITER_IDLE_POLL);
             }
         }

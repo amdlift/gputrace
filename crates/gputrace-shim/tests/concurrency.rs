@@ -343,3 +343,57 @@ fn a_two_device_run_is_distinguishable_in_the_bundle() {
         "the two GPUs must be distinguishable from the bundle alone"
     );
 }
+
+#[test]
+fn exiting_while_threads_are_recording_still_closes_a_consistent_bundle() {
+    const CALLS_BEFORE_REPORTING: usize = 512;
+
+    let harness = Harness::new().expect("harness");
+    let run = harness
+        .run(target_bin("capture_busy_exit"), &[])
+        .expect("run target");
+    assert!(run.status().success(), "target failed: {}", run.stderr());
+    assert_eq!(run.stdout(), "recording=4\n");
+
+    let bundle = run.bundle().expect("bundle");
+    let segments = segments(&bundle);
+    assert_eq!(segments.len(), THREADS + 1, "one segment per host thread");
+
+    for (thread, records) in &segments {
+        if records.len() == 1 {
+            continue;
+        }
+        assert!(
+            records.len() >= CALLS_BEFORE_REPORTING,
+            "{thread:?} reported {CALLS_BEFORE_REPORTING} calls but kept {}",
+            records.len()
+        );
+        assert_eq!(records[0].thread_seq, 0, "{thread:?} lost its first calls");
+        assert!(
+            records
+                .windows(2)
+                .all(|pair| pair[0].thread_seq < pair[1].thread_seq),
+            "{thread:?} was collected out of the order it recorded in"
+        );
+    }
+}
+
+#[test]
+fn an_abrupt_exit_passes_through_unchanged_and_claims_no_complete_bundle() {
+    let harness = Harness::new().expect("harness");
+    let run = harness
+        .run(target_bin("capture_busy_exit"), &["abrupt"])
+        .expect("run target");
+
+    assert_eq!(
+        run.status().code(),
+        Some(7),
+        "capture must not change what the target's exit looks like: {}",
+        run.stderr()
+    );
+    assert!(
+        run.bundle().is_err(),
+        "`_exit` runs no atexit handler, so the bundle was never finished and \
+         must not read back as one that was"
+    );
+}
