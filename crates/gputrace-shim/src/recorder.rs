@@ -68,12 +68,7 @@ impl CallScope {
         let mut record =
             CallRecord::new(stamp.function, stamp.thread_seq, stamp.timestamp_ns, result);
         record.args = args;
-        let mut record = Some(record);
-        with_local(|local| {
-            if let Some(record) = record.take() {
-                local.push(record);
-            }
-        });
+        with_local(move |local| local.push(record));
     }
 }
 
@@ -339,6 +334,8 @@ struct Timespec {
     tv_nsec: i64,
 }
 
+/// Linux's `CLOCK_MONOTONIC_RAW`: unslewed by NTP, and read from the vDSO,
+/// so stamping every call costs no syscall (ADR-0004).
 const CLOCK_MONOTONIC_RAW: i32 = 4;
 
 fn current_thread_id() -> u64 {
