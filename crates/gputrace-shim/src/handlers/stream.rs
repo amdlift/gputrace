@@ -54,11 +54,11 @@ fn event_of(event: CUevent) -> Option<HandleId> {
 /// `cuStreamCreate` and its priority-taking twin, which differ only in the
 /// parameters following `flags`.
 macro_rules! stream_create_shims {
-    ($($symbol:ident($flags:ident $(, $extra:ident: $ty:ty)*);)*) => {$(
+    ($($symbol:ident($flags_name:literal $(, $extra:ident: $ty:ty as $recorded:literal)*);)*) => {$(
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $symbol(
             phstream: *mut CUstream,
-            $flags: c_uint,
+            flags: c_uint,
             $($extra: $ty,)*
         ) -> CUresult {
             static REAL: DriverFn<
@@ -67,7 +67,7 @@ macro_rules! stream_create_shims {
 
             let call = recorder::begin(stringify!($symbol));
             let result = match REAL.get() {
-                Some(real) => unsafe { real(phstream, $flags $(, $extra)*) },
+                Some(real) => unsafe { real(phstream, flags $(, $extra)*) },
                 None => CUDA_ERROR_NOT_FOUND,
             };
             let created = if result == CUDA_SUCCESS && !phstream.is_null() {
@@ -78,8 +78,8 @@ macro_rules! stream_create_shims {
             let deep = call
                 .deep(vec![
                     stream_arg(created),
-                    Argument::new(stringify!($flags), ArgValue::Unsigned(u64::from($flags))),
-                    $(Argument::new(stringify!($extra), RecordArg::record(&$extra)),)*
+                    Argument::new($flags_name, ArgValue::Unsigned(u64::from(flags))),
+                    $(Argument::new($recorded, RecordArg::record(&$extra)),)*
                 ])
                 .produces(Some(stream_of(created)));
             call.finish_deep(result, deep);
@@ -116,12 +116,12 @@ macro_rules! stream_shims {
 
 /// `cuStreamWaitEvent`: one half of every cross-stream edge.
 macro_rules! wait_event_shims {
-    ($($symbol:ident($flags:ident);)*) => {$(
+    ($($symbol:ident($flags_name:literal);)*) => {$(
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $symbol(
             hstream: CUstream,
             hevent: CUevent,
-            $flags: c_uint,
+            flags: c_uint,
         ) -> CUresult {
             static REAL: DriverFn<
                 unsafe extern "C" fn(CUstream, CUevent, c_uint) -> CUresult,
@@ -132,12 +132,12 @@ macro_rules! wait_event_shims {
                 .deep(vec![
                     stream_arg(hstream),
                     event_arg(hevent),
-                    Argument::new(stringify!($flags), ArgValue::Unsigned(u64::from($flags))),
+                    Argument::new($flags_name, ArgValue::Unsigned(u64::from(flags))),
                 ])
                 .consumes(Some(stream_of(hstream)))
                 .consumes(event_of(hevent));
             let result = match REAL.get() {
-                Some(real) => unsafe { real(hstream, hevent, $flags) },
+                Some(real) => unsafe { real(hstream, hevent, flags) },
                 None => CUDA_ERROR_NOT_FOUND,
             };
             call.finish_deep(result, deep);
@@ -238,8 +238,8 @@ macro_rules! event_shims {
 }
 
 stream_create_shims! {
-    cuStreamCreate(Flags);
-    cuStreamCreateWithPriority(flags, priority: c_int);
+    cuStreamCreate("Flags");
+    cuStreamCreateWithPriority("flags", priority: c_int as "priority");
 }
 
 stream_shims! {
@@ -250,8 +250,8 @@ stream_shims! {
 }
 
 wait_event_shims! {
-    cuStreamWaitEvent(Flags);
-    cuStreamWaitEvent_ptsz(Flags);
+    cuStreamWaitEvent("Flags");
+    cuStreamWaitEvent_ptsz("Flags");
 }
 
 event_create_shims! {
