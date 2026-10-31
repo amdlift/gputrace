@@ -14,9 +14,8 @@ use std::sync::OnceLock;
 use gputrace_core::{ArgValue, Argument};
 
 use crate::recorder::{self, CallScope};
-use crate::shim::{CUDA_ERROR_NOT_FOUND, CUresult, DriverFn};
+use crate::shim::{CUDA_ERROR_NOT_FOUND, CUDA_SUCCESS, CUresult, DriverFn};
 
-const CUDA_SUCCESS: CUresult = 0;
 const CU_GET_PROC_ADDRESS_SYMBOL_NOT_FOUND: c_int = 1;
 
 /// The CUDA 11.3 arity, which the driver still exports: a caller from that

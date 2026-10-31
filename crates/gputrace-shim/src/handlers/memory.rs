@@ -12,12 +12,12 @@ use std::ffi::{c_uint, c_void};
 
 use gputrace_core::{ArgValue, Argument};
 
+use crate::generated::cuda_types::CUstream;
+use crate::handlers::golden::{self, GOLDEN_OUTPUT};
 use crate::handlers::handles::{HandleKind, handle_id};
 use crate::handlers::stream::{stream_arg, stream_of};
 use crate::recorder;
-use crate::shim::{CUDA_ERROR_NOT_FOUND, CUresult, DriverFn, RecordArg};
-
-const CUDA_SUCCESS: CUresult = 0;
+use crate::shim::{CUDA_ERROR_NOT_FOUND, CUDA_SUCCESS, CUresult, DriverFn, RecordArg};
 
 /// `cuMemAlloc`, which hands back a device pointer the trace must be able to
 /// follow. The pointer is recorded as the call's product, not as the host
@@ -141,7 +141,14 @@ macro_rules! copy_to_host_shims {
                 ])
                 .consumes(handle_id(HandleKind::DevicePtr, source));
             let deep = if result == CUDA_SUCCESS {
-                unsafe { deep.output(GOLDEN_OUTPUT, dst_host.cast::<u8>(), byte_count as usize) }
+                unsafe {
+                    deep.output(
+                        GOLDEN_OUTPUT,
+                        dst_host.cast::<u8>(),
+                        byte_count as usize,
+                        handle_id(HandleKind::DevicePtr, source),
+                    )
+                }
             } else {
                 deep
             };
@@ -161,10 +168,10 @@ macro_rules! alloc_async_shims {
         pub unsafe extern "C" fn $symbol(
             dptr: *mut u64,
             bytesize: usize,
-            h_stream: *mut c_void,
+            h_stream: CUstream,
         ) -> CUresult {
             static REAL: DriverFn<
-                unsafe extern "C" fn(*mut u64, usize, *mut c_void) -> CUresult,
+                unsafe extern "C" fn(*mut u64, usize, CUstream) -> CUresult,
             > = DriverFn::new(concat!(stringify!($symbol), "\0").as_bytes());
 
             let call = recorder::begin(stringify!($symbol));
@@ -194,8 +201,8 @@ macro_rules! alloc_async_shims {
 macro_rules! free_async_shims {
     ($($symbol:ident;)*) => {$(
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $symbol(dptr: u64, h_stream: *mut c_void) -> CUresult {
-            static REAL: DriverFn<unsafe extern "C" fn(u64, *mut c_void) -> CUresult> =
+        pub unsafe extern "C" fn $symbol(dptr: u64, h_stream: CUstream) -> CUresult {
+            static REAL: DriverFn<unsafe extern "C" fn(u64, CUstream) -> CUresult> =
                 DriverFn::new(concat!(stringify!($symbol), "\0").as_bytes());
 
             let call = recorder::begin(stringify!($symbol));
@@ -226,10 +233,10 @@ macro_rules! copy_to_device_async_shims {
             dst_device: $pointer,
             src_host: *const c_void,
             byte_count: $size,
-            h_stream: *mut c_void,
+            h_stream: CUstream,
         ) -> CUresult {
             static REAL: DriverFn<
-                unsafe extern "C" fn($pointer, *const c_void, $size, *mut c_void) -> CUresult,
+                unsafe extern "C" fn($pointer, *const c_void, $size, CUstream) -> CUresult,
             > = DriverFn::new(concat!(stringify!($symbol), "\0").as_bytes());
 
             let destination = u64::from(dst_device);
@@ -256,10 +263,56 @@ macro_rules! copy_to_device_async_shims {
 }
 
 /// What a staged host-to-device buffer is called in a record's payloads.
-pub(crate) const HOST_TO_DEVICE: &str = "host_to_device";
-/// What a captured device-to-host result is called. The name a later
-/// oracle's differential signal looks for (GLOSSARY: golden output).
-pub(crate) const GOLDEN_OUTPUT: &str = "golden_output";
+const HOST_TO_DEVICE: &str = "host_to_device";
+
+/// `cuMemcpyDtoHAsync`. Nothing can be read here: the driver has only
+/// queued the copy, and the destination still holds whatever the caller last
+/// left there. The destination is staged instead, and whichever
+/// synchronization blocks for the copy captures it (see
+/// [`crate::handlers::golden`]).
+macro_rules! copy_to_host_async_shims {
+    ($($symbol:ident($pointer:ty, $size:ty);)*) => {$(
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $symbol(
+            dst_host: *mut c_void,
+            src_device: $pointer,
+            byte_count: $size,
+            h_stream: CUstream,
+        ) -> CUresult {
+            static REAL: DriverFn<
+                unsafe extern "C" fn(*mut c_void, $pointer, $size, CUstream) -> CUresult,
+            > = DriverFn::new(concat!(stringify!($symbol), "\0").as_bytes());
+
+            let source = u64::from(src_device);
+            let call = recorder::begin(stringify!($symbol));
+            let deep = call
+                .deep(vec![
+                    Argument::new("dstHost", ArgValue::HostPtr(dst_host as usize as u64)),
+                    Argument::new("srcDevice", ArgValue::DevicePtr(source)),
+                    Argument::new("ByteCount", RecordArg::record(&byte_count)),
+                    stream_arg(h_stream),
+                ])
+                .consumes(handle_id(HandleKind::DevicePtr, source))
+                .consumes(Some(stream_of(h_stream)));
+            let result = match REAL.get() {
+                Some(real) => unsafe { real(dst_host, src_device, byte_count, h_stream) },
+                None => CUDA_ERROR_NOT_FOUND,
+            };
+            if result == CUDA_SUCCESS {
+                unsafe {
+                    golden::stage(
+                        dst_host,
+                        byte_count as usize,
+                        handle_id(HandleKind::DevicePtr, source),
+                        stream_of(h_stream),
+                    );
+                }
+            }
+            call.finish_deep(result, deep);
+            result
+        }
+    )*};
+}
 
 alloc_shims! {
     cuMemAlloc(c_uint, c_uint);
@@ -297,4 +350,10 @@ copy_to_device_async_shims! {
     cuMemcpyHtoDAsync(c_uint, c_uint);
     cuMemcpyHtoDAsync_v2(u64, usize);
     cuMemcpyHtoDAsync_v2_ptsz(u64, usize);
+}
+
+copy_to_host_async_shims! {
+    cuMemcpyDtoHAsync(c_uint, c_uint);
+    cuMemcpyDtoHAsync_v2(u64, usize);
+    cuMemcpyDtoHAsync_v2_ptsz(u64, usize);
 }

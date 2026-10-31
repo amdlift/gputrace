@@ -22,10 +22,11 @@ fn alloc(dptr: *mut CUdeviceptr, bytes: usize) -> CUresult {
 }
 
 fn free(dptr: CUdeviceptr) -> CUresult {
-    if state().allocations.remove(&dptr).is_none() {
-        return CUDA_ERROR_INVALID_VALUE;
+    if state().release(dptr) {
+        CUDA_SUCCESS
+    } else {
+        CUDA_ERROR_INVALID_VALUE
     }
-    CUDA_SUCCESS
 }
 
 fn copy_host_to_device(dst: CUdeviceptr, src: *const c_void, len: usize) -> CUresult {
@@ -275,4 +276,47 @@ pub unsafe extern "C" fn cuMemcpyHtoDAsync(
         return CUDA_ERROR_INVALID_HANDLE;
     }
     copy_host_to_device(CUdeviceptr::from(dst_device), src_host, byte_count as usize)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cuMemcpyDtoHAsync_v2(
+    dst_host: *mut c_void,
+    src_device: CUdeviceptr,
+    byte_count: usize,
+    h_stream: CUstream,
+) -> CUresult {
+    note("cuMemcpyDtoHAsync_v2");
+    if !live_stream(h_stream) {
+        return CUDA_ERROR_INVALID_HANDLE;
+    }
+    copy_device_to_host(dst_host, src_device, byte_count)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cuMemcpyDtoHAsync_v2_ptsz(
+    dst_host: *mut c_void,
+    src_device: CUdeviceptr,
+    byte_count: usize,
+    h_stream: CUstream,
+) -> CUresult {
+    note("cuMemcpyDtoHAsync_v2_ptsz");
+    if !live_stream(h_stream) {
+        return CUDA_ERROR_INVALID_HANDLE;
+    }
+    copy_device_to_host(dst_host, src_device, byte_count)
+}
+
+/// The pre-CUDA-3.2 spelling: device pointers and sizes were 32-bit.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cuMemcpyDtoHAsync(
+    dst_host: *mut c_void,
+    src_device: CUdeviceptrV1,
+    byte_count: c_uint,
+    h_stream: CUstream,
+) -> CUresult {
+    note("cuMemcpyDtoHAsync");
+    if !live_stream(h_stream) {
+        return CUDA_ERROR_INVALID_HANDLE;
+    }
+    copy_device_to_host(dst_host, CUdeviceptr::from(src_device), byte_count as usize)
 }

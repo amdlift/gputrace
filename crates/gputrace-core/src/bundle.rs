@@ -150,11 +150,12 @@ pub struct ComputeCapability {
 /// One GPU the capture's records targeted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceSummary {
-    /// The ordinal as the captured process saw it, which is what
-    /// [`CallRecord::device`] holds. A capture that selected a GPU with
-    /// `CUDA_VISIBLE_DEVICES` renumbers it, so this need not be the ordinal
-    /// the same GPU has outside that process.
-    pub ordinal: u32,
+    /// The `CUdevice` the captured process named, which is what
+    /// [`CallRecord::device`] holds: a handle the driver hands out, not an
+    /// ordinal, even though NVIDIA's driver happens to number them the same.
+    /// A capture confined with `CUDA_VISIBLE_DEVICES` renumbers from zero, so
+    /// this need not match what the same GPU is called outside that process.
+    pub device: u32,
     pub compute_capability: Option<ComputeCapability>,
     pub records: u64,
 }
@@ -207,7 +208,6 @@ impl BundleWriter {
         &self.root
     }
 
-    /// The payload store shared by every segment writer in this bundle.
     pub fn blobs(&self) -> &BlobStore {
         &self.blobs
     }
@@ -339,10 +339,6 @@ impl TraceBundle {
 
     pub fn blobs(&self) -> &BlobStore {
         &self.blobs
-    }
-
-    pub fn read_blob(&self, id: &BlobId) -> Result<Vec<u8>> {
-        self.blobs.get(id)
     }
 
     pub fn threads(&self) -> &[ThreadSummary] {

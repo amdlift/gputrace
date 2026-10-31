@@ -2,6 +2,7 @@
 //! Each module is a `shim!` block; see [`crate::shim`] for the pattern.
 
 mod context;
+mod golden;
 mod handles;
 mod init;
 mod launch;

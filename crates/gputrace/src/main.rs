@@ -6,7 +6,9 @@ mod capture;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+use clap::builder::TypedValueParser;
 use clap::{Parser, Subcommand};
+use gputrace_core::Fidelity;
 
 #[derive(Parser)]
 #[command(
@@ -30,8 +32,17 @@ enum Command {
         /// included. See docs/choosing-a-capture-gpu.md.
         #[arg(long)]
         device: Option<String>,
-        /// Also capture device->host golden outputs (L3).
-        #[arg(long)]
+        /// How much to record of each intercepted call.
+        ///
+        /// Each level adds to the one before it: metadata is the call, its
+        /// thread, its ordering stamps, its scalar arguments and its return
+        /// value; handles adds stable identity for handles and device
+        /// pointers; replayable adds host->device buffers, launch parameters
+        /// and module images; golden adds device->host outputs.
+        #[arg(long, value_name = "LEVEL", default_value = "replayable", value_parser = fidelity())]
+        fidelity: Fidelity,
+        /// Shorthand for --fidelity golden: also capture device->host outputs.
+        #[arg(long, conflicts_with = "fidelity")]
         golden: bool,
         /// Output trace bundle directory.
         #[arg(short, long, default_value = "trace")]
@@ -73,11 +84,17 @@ enum Command {
     },
 }
 
+fn fidelity() -> impl TypedValueParser<Value = Fidelity> {
+    clap::builder::PossibleValuesParser::new(Fidelity::ALL.map(Fidelity::name))
+        .try_map(|name| name.parse::<Fidelity>())
+}
+
 fn main() {
     let cli = Cli::parse();
     match cli.command {
         Command::Capture {
             device,
+            fidelity,
             golden,
             out,
             target,
@@ -85,7 +102,7 @@ fn main() {
             let capture = capture::Capture {
                 out,
                 device,
-                golden,
+                fidelity: if golden { Fidelity::Golden } else { fidelity },
                 target,
             };
             match capture.run() {

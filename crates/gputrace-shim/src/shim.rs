@@ -17,6 +17,8 @@ use crate::real::real_symbol;
 /// Every `cu*` entry point returns a `CUresult`.
 pub type CUresult = c_int;
 
+pub const CUDA_SUCCESS: CUresult = 0;
+
 /// `CUDA_ERROR_NOT_FOUND`. What a shim answers when the backing driver does
 /// not export the entry point it stands in for — 21 of `cuda.h`'s
 /// declarations are absent from a shipped driver, so this is normal.

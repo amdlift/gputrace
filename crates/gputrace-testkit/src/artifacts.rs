@@ -18,17 +18,15 @@ const INTERPOSER_PACKAGE: &str = "gputrace-shim";
 const STUB_PACKAGE: &str = "gputrace-stub-cuda";
 const TARGET_PACKAGE: &str = "gputrace-testkit";
 
-/// The interposer cdylib, built on demand.
 pub fn interposer() -> Result<&'static Path, TestkitError> {
     Ok(built()?.interposer.as_path())
 }
 
-/// The stub `libcuda` cdylib, built on demand.
 pub fn stub_libcuda() -> Result<&'static Path, TestkitError> {
     Ok(built()?.stub.as_path())
 }
 
-/// A fixture target binary by its `[[bin]]` name, built on demand.
+/// A fixture target by its `[[bin]]` name.
 pub fn target_bin(name: &str) -> PathBuf {
     if let Err(e) = built() {
         panic!("{e}");

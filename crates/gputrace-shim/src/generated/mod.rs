@@ -13,7 +13,7 @@
 //! `docs/generated-surface.md` has the longer version, and `PROVENANCE.txt`
 //! records which header the vendored output came from.
 
-mod cuda_types;
+pub(crate) mod cuda_types;
 pub(crate) mod hand_written;
 mod record_args;
 mod trampolines;

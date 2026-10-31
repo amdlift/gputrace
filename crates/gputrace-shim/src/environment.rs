@@ -3,7 +3,7 @@
 //! Every question here goes to the backing library through [`crate::real`],
 //! never through this interposer's own exported `cu*`. A shimmed query would
 //! append a record the target never made, and a trace whose own probes cannot
-//! be told apart from the target's calls is not a recording of the target.
+//! be told apart from the target's calls is not a trace of the target.
 //!
 //! An unanswerable question is answered `None`. A manifest that invented a
 //! driver version would be worse than one that admits it does not know, since
@@ -14,8 +14,7 @@ use std::ffi::c_int;
 use gputrace_core::ComputeCapability;
 
 use crate::real::real_symbol;
-
-const CUDA_SUCCESS: c_int = 0;
+use crate::shim::CUDA_SUCCESS;
 
 /// `CUdevice_attribute`, transcribed from `cuda.h`.
 const COMPUTE_CAPABILITY_MAJOR: c_int = 75;
@@ -33,10 +32,10 @@ pub fn driver_version() -> Option<u32> {
     u32::try_from(version).ok()
 }
 
-/// The architecture generation of the device the captured process knows by
-/// `ordinal`.
-pub fn compute_capability(ordinal: u32) -> Option<ComputeCapability> {
-    let device = c_int::try_from(ordinal).ok()?;
+/// The architecture generation of the GPU the captured process named by the
+/// `CUdevice` `device`.
+pub fn compute_capability(device: u32) -> Option<ComputeCapability> {
+    let device = c_int::try_from(device).ok()?;
     Some(ComputeCapability {
         major: attribute(COMPUTE_CAPABILITY_MAJOR, device)?,
         minor: attribute(COMPUTE_CAPABILITY_MINOR, device)?,

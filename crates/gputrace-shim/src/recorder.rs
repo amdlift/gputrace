@@ -8,10 +8,16 @@
 //!
 //! Buffers are reachable from outside their owning thread, so exiting does
 //! not depend on every recording thread having exited first.
+//!
+//! Everything the record path runs through is in this file, which is what
+//! `tests/concurrency.rs::record_path` reads to hold it to the rules above.
+//! The two things that change for other reasons live beside it: what the
+//! environment asked the capture to do ([`config`]), and which GPU a call
+//! targeted ([`devices`]).
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::ffi::c_int;
 use std::path::PathBuf;
@@ -22,21 +28,17 @@ use std::thread::{self, JoinHandle, Thread};
 use std::time::Duration;
 
 use gputrace_core::{
-    ArgValue, Argument, BundleWriter, CallRecord, CaptureConfig, DeviceSummary, Environment,
-    Fidelity, HandleBinding, HandleId, HandleRole, PayloadRef, SegmentWriter, ThreadId,
+    Argument, BundleWriter, CallRecord, Fidelity, HandleBinding, HandleId, HandleRole, PayloadRef,
+    SegmentWriter, ThreadId,
 };
 
-use crate::environment;
+mod config;
+mod devices;
 
-/// Names the directory the interposer writes its trace bundle to. Unset or
-/// empty means no capture: the shims forward and record nothing.
-pub const BUNDLE_DIR_ENV: &str = "GPUTRACE_OUT";
-/// Names how much each shim records: `metadata`, `handles`, `replayable`
-/// or `golden`.
-pub const FIDELITY_ENV: &str = "GPUTRACE_FIDELITY";
-/// How CUDA confines a process to a subset of the GPUs. `gputrace capture
-/// --device` sets it, and the manifest records what it named.
-pub const VISIBLE_DEVICES_ENV: &str = "CUDA_VISIBLE_DEVICES";
+use crate::recorder::config::{capture_config, fidelity};
+use crate::recorder::devices::{Observed, TargetDevice, target_device};
+
+pub use crate::recorder::config::{BUNDLE_DIR_ENV, FIDELITY_ENV};
 
 const CHUNK_RECORDS: usize = 256;
 const WRITER_IDLE_POLL: Duration = Duration::from_millis(2);
@@ -96,6 +98,8 @@ impl CallScope {
         let Some(stamp) = self.stamp else {
             return;
         };
+        // After the forward, never before it: see `register_exit_hook`.
+        register_exit_hook();
         let DeepCall {
             args,
             handles,
@@ -120,6 +124,7 @@ impl CallScope {
 struct StagedPayload {
     role: &'static str,
     bytes: Vec<u8>,
+    source: Option<HandleId>,
 }
 
 /// One buffered call, with whatever the deep handler captured alongside it.
@@ -154,17 +159,14 @@ impl DeepCall {
         self.fidelity.is_some_and(|have| rank(have) >= rank(least))
     }
 
-    /// The call created `id`.
     pub fn produces(self, id: Option<HandleId>) -> Self {
         self.binds(id, HandleRole::Produced)
     }
 
-    /// The call used `id` without creating or ending it.
     pub fn consumes(self, id: Option<HandleId>) -> Self {
         self.binds(id, HandleRole::Consumed)
     }
 
-    /// The call ended `id`.
     pub fn destroys(self, id: Option<HandleId>) -> Self {
         self.binds(id, HandleRole::Destroyed)
     }
@@ -183,17 +185,26 @@ impl DeepCall {
     /// # Safety
     /// `src` must be readable for `len` bytes for the duration of the call.
     pub unsafe fn payload(self, role: &'static str, src: *const u8, len: usize) -> Self {
-        unsafe { self.stage(Fidelity::Replayable, role, src, len) }
+        unsafe { self.stage(Fidelity::Replayable, role, src, len, None) }
     }
 
     /// Capture `len` bytes of host memory at `src` as a golden value: what
     /// the driver answered, kept so a later replay can be diffed against it.
-    /// Only a golden capture pays for it.
+    /// `source` names the device allocation the bytes came from, which is the
+    /// only tie back to the read-back when the call capturing them is a later
+    /// synchronization rather than the copy itself. Only a golden capture
+    /// pays for it.
     ///
     /// # Safety
     /// `src` must be readable for `len` bytes for the duration of the call.
-    pub unsafe fn output(self, role: &'static str, src: *const u8, len: usize) -> Self {
-        unsafe { self.stage(Fidelity::Golden, role, src, len) }
+    pub unsafe fn output(
+        self,
+        role: &'static str,
+        src: *const u8,
+        len: usize,
+        source: Option<HandleId>,
+    ) -> Self {
+        unsafe { self.stage(Fidelity::Golden, role, src, len, source) }
     }
 
     /// # Safety
@@ -204,6 +215,7 @@ impl DeepCall {
         role: &'static str,
         src: *const u8,
         len: usize,
+        source: Option<HandleId>,
     ) -> Self {
         if len == 0 || src.is_null() || !self.wants(least) {
             return self;
@@ -211,6 +223,7 @@ impl DeepCall {
         self.payloads.push(StagedPayload {
             role,
             bytes: unsafe { std::slice::from_raw_parts(src, len) }.to_vec(),
+            source,
         });
         self
     }
@@ -237,6 +250,13 @@ pub fn bind_device(device: Option<u32>) {
 /// The device this thread's calls are currently attributed to.
 pub fn bound_device() -> Option<u32> {
     with_local(|local| local.device).flatten()
+}
+
+/// Whether this capture keeps what the device answered. A handler that has
+/// to hold a read-back's destination until a later call makes it valid asks
+/// here first, so nothing is held when nobody wants it.
+pub fn wants_golden() -> bool {
+    capture().is_some() && fidelity() == Fidelity::Golden
 }
 
 /// Finish the bundle: flush every thread's buffer, stop the writer, and
@@ -453,7 +473,6 @@ fn start() -> Option<Capture> {
             .ok()?
     };
     let _ = queue.writer.set(handle.thread().clone());
-    register_exit_hook();
 
     Some(Capture {
         queue,
@@ -486,6 +505,7 @@ fn drain_to_bundle(queue: &Queue, bundle: BundleWriter) {
                             role: staged.role.to_owned(),
                             blob,
                             len: staged.bytes.len() as u64,
+                            source: staged.source,
                         });
                     }
                     segment.write(&call.record)?;
@@ -509,128 +529,6 @@ fn drain_to_bundle(queue: &Queue, bundle: BundleWriter) {
     if let Err(e) = finished {
         eprintln!("gputrace: capture incomplete: {e}");
     }
-}
-
-/// What the trace says about the GPUs it ran against, accumulated by the
-/// writer thread as records pass through it.
-///
-/// The driver is asked about a device the first time a record names one:
-/// on this thread, so no capturing thread waits for the answer, and while
-/// the target is still running, rather than at exit when the driver may
-/// already be tearing itself down.
-#[derive(Default)]
-struct Observed {
-    driver_version: Option<u32>,
-    asked_for_the_version: bool,
-    devices: BTreeMap<u32, DeviceSummary>,
-}
-
-impl Observed {
-    fn saw(&mut self, record: &CallRecord) {
-        if !self.asked_for_the_version {
-            self.asked_for_the_version = true;
-            self.driver_version = environment::driver_version();
-        }
-        let Some(ordinal) = record.device else {
-            return;
-        };
-        self.devices
-            .entry(ordinal)
-            .or_insert_with(|| DeviceSummary {
-                ordinal,
-                compute_capability: environment::compute_capability(ordinal),
-                records: 0,
-            })
-            .records += 1;
-    }
-
-    fn describe(self) -> Environment {
-        Environment {
-            driver_version: self.driver_version,
-            devices: self.devices.into_values().collect(),
-        }
-    }
-}
-
-fn capture_config() -> CaptureConfig {
-    CaptureConfig {
-        backend: "cuda".to_owned(),
-        fidelity: fidelity(),
-        device: selected_device(),
-        command: env::args_os()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect(),
-    }
-}
-
-/// The GPU this capture was pointed at, as the launcher numbered it. CUDA
-/// renumbers a confined process's devices from zero, so this is not the
-/// ordinal the records carry — it is the one `--device` named.
-fn selected_device() -> Option<u32> {
-    sole_device(&env::var(VISIBLE_DEVICES_ENV).ok()?)
-}
-
-/// The one device `selection` names, or `None` when it names several, none,
-/// or a GPU by something other than an ordinal.
-fn sole_device(selection: &str) -> Option<u32> {
-    let mut devices = selection.split(',');
-    let only = devices.next()?.trim();
-    devices.next().is_none().then(|| only.parse().ok())?
-}
-
-/// How much every shim in this process records, read once. Unset means the
-/// capture is replayable: a bundle is only worth keeping if it holds the
-/// payloads a replay needs.
-fn fidelity() -> Fidelity {
-    static FIDELITY: OnceLock<Fidelity> = OnceLock::new();
-    *FIDELITY.get_or_init(|| match env::var(FIDELITY_ENV).as_deref() {
-        Ok("metadata") => Fidelity::Metadata,
-        Ok("handles") => Fidelity::Handles,
-        Ok("golden") => Fidelity::Golden,
-        _ => Fidelity::Replayable,
-    })
-}
-
-/// What one call says about the device it targeted. A call that names a
-/// device targets that one; everything else targets whatever its thread's
-/// current context does, which is how a device-agnostic call in a multi-GPU
-/// process is still attributable to a GPU.
-enum TargetDevice {
-    /// The call named a device and made it the calling thread's.
-    Bound(u32),
-    /// The call named a device without changing what its thread targets.
-    Named(u32),
-    /// The call ended the calling thread's context.
-    Released,
-    /// The call says nothing; it targets what its thread already did.
-    Inherited,
-}
-
-fn target_device(function: &str, args: &[Argument]) -> TargetDevice {
-    if function.starts_with("cuCtxDestroy") {
-        return TargetDevice::Released;
-    }
-    match named_device(args) {
-        Some(device) if binds_the_thread(function) => TargetDevice::Bound(device),
-        Some(device) => TargetDevice::Named(device),
-        None => TargetDevice::Inherited,
-    }
-}
-
-fn binds_the_thread(function: &str) -> bool {
-    function.starts_with("cuCtxCreate") || function.starts_with("cuDevicePrimaryCtxRetain")
-}
-
-/// The device ordinal a call passed by value. A `CUdevice` out-parameter is
-/// recorded as a pointer, so a call that only asks for a device never looks
-/// like one that targets it.
-fn named_device(args: &[Argument]) -> Option<u32> {
-    args.iter()
-        .find_map(|arg| match (arg.name.as_str(), &arg.value) {
-            ("dev" | "device", ArgValue::Signed(ordinal)) => u32::try_from(*ordinal).ok(),
-            ("dev" | "device", ArgValue::Unsigned(ordinal)) => u32::try_from(*ordinal).ok(),
-            _ => None,
-        })
 }
 
 struct Local {
@@ -735,12 +633,27 @@ extern "C" fn flush_at_exit() {
     shutdown();
 }
 
+/// Arrange for the bundle to be finished on the way out, once the backing
+/// driver is loaded.
+///
+/// The target process is what dies, so the bundle has to be finished from
+/// inside it. `_exit`, `abort` and a fatal signal all bypass `atexit`: those
+/// runs lose the bundle by construction, which is why shutdown must never be
+/// the only thing standing between the target and its own exit.
+///
+/// Registering only once the real driver has answered a call is what lets the
+/// manifest describe a real GPU at all. The driver registers its own teardown
+/// from inside `cuInit`, and glibc runs exit handlers newest first, so a hook
+/// registered any earlier runs *after* the driver has deinitialized itself
+/// and every question the manifest asks answers `CUDA_ERROR_DEINITIALIZED`.
 fn register_exit_hook() {
-    // The target process is what dies, so the bundle has to be finished from
-    // inside it. `_exit`, `abort` and a fatal signal all bypass `atexit`:
-    // those runs lose the bundle by construction, which is why shutdown must
-    // never be the only thing standing between the target and its own exit.
-    unsafe { atexit(flush_at_exit) };
+    static REGISTERED: OnceLock<()> = OnceLock::new();
+    if capture().is_none() {
+        return;
+    }
+    REGISTERED.get_or_init(|| {
+        unsafe { atexit(flush_at_exit) };
+    });
 }
 
 #[repr(C)]
@@ -766,99 +679,4 @@ fn monotonic_ns() -> u64 {
         return 0;
     }
     now.tv_sec.unsigned_abs() * 1_000_000_000 + now.tv_nsec.unsigned_abs()
-}
-
-/// What a call says about its device decides a record's attribution in a
-/// multi-GPU process. The cases below are ones no shimmed entry point
-/// reaches yet, so they are pinned here rather than through the bundle.
-#[cfg(test)]
-mod target_device_tests {
-    use super::{TargetDevice, target_device};
-
-    use gputrace_core::{ArgValue, Argument};
-
-    fn by_value(name: &str, ordinal: i64) -> Vec<Argument> {
-        vec![Argument::new(name, ArgValue::Signed(ordinal))]
-    }
-
-    #[test]
-    fn a_query_names_its_device_without_rebinding_the_calling_thread() {
-        let args = by_value("dev", 1);
-        assert!(matches!(
-            target_device("cuDeviceGetAttribute", &args),
-            TargetDevice::Named(1)
-        ));
-    }
-
-    #[test]
-    fn creating_a_context_binds_the_thread_to_the_device_it_names() {
-        let args = by_value("dev", 1);
-        assert!(matches!(
-            target_device("cuCtxCreate_v4", &args),
-            TargetDevice::Bound(1)
-        ));
-        assert!(matches!(
-            target_device("cuDevicePrimaryCtxRetain", &args),
-            TargetDevice::Bound(1)
-        ));
-    }
-
-    #[test]
-    fn asking_for_a_device_handle_is_not_targeting_one() {
-        let args = vec![
-            Argument::new("device", ArgValue::HostPtr(0x7fff_0000)),
-            Argument::new("ordinal", ArgValue::Signed(1)),
-        ];
-        assert!(matches!(
-            target_device("cuDeviceGet", &args),
-            TargetDevice::Inherited
-        ));
-    }
-
-    #[test]
-    fn a_call_naming_no_device_targets_whatever_its_thread_does() {
-        let args = vec![Argument::new("flags", ArgValue::Unsigned(0))];
-        assert!(matches!(
-            target_device("cuInit", &args),
-            TargetDevice::Inherited
-        ));
-    }
-
-    #[test]
-    fn tearing_down_a_context_releases_the_binding_whatever_it_names() {
-        let args = vec![Argument::new("ctx", ArgValue::HostPtr(0x1_0000))];
-        assert!(matches!(
-            target_device("cuCtxDestroy_v2", &args),
-            TargetDevice::Released
-        ));
-    }
-}
-
-/// Which GPU a capture was pointed at is only an answer when exactly one was
-/// selected. The cases below do not reach the bundle from any fixture, so
-/// they are pinned here.
-#[cfg(test)]
-mod sole_device_tests {
-    use super::sole_device;
-
-    #[test]
-    fn one_selected_device_is_the_one_the_capture_was_pointed_at() {
-        assert_eq!(sole_device("1"), Some(1));
-        assert_eq!(sole_device(" 2 "), Some(2));
-    }
-
-    #[test]
-    fn a_selection_of_several_devices_names_no_single_one() {
-        assert_eq!(sole_device("0,1"), None);
-    }
-
-    /// CUDA also accepts GPU UUIDs, and an empty selection hides every GPU.
-    #[test]
-    fn a_selection_that_is_not_an_ordinal_is_not_guessed_at() {
-        assert_eq!(
-            sole_device("GPU-dead0000-beef-1234-5678-90abcdef1234"),
-            None
-        );
-        assert_eq!(sole_device(""), None);
-    }
 }

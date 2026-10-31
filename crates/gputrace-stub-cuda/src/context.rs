@@ -173,6 +173,16 @@ pub extern "C" fn cuCtxSynchronize() -> CUresult {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn cuCtxSynchronize_v2(ctx: CUcontext) -> CUresult {
+    note("cuCtxSynchronize_v2");
+    if state().contexts.contains_key(&(ctx as usize)) {
+        CUDA_SUCCESS
+    } else {
+        CUDA_ERROR_INVALID_CONTEXT
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn cuCtxGetDevice(device: *mut CUdevice) -> CUresult {
     note("cuCtxGetDevice");
     let handle = current_context();

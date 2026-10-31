@@ -15,6 +15,60 @@ pub enum Fidelity {
     Golden,
 }
 
+impl Fidelity {
+    /// Every level, in the order each adds to the one before it.
+    pub const ALL: [Self; 4] = [
+        Self::Metadata,
+        Self::Handles,
+        Self::Replayable,
+        Self::Golden,
+    ];
+
+    /// How a level is spelled on the command line and in `GPUTRACE_FIDELITY`.
+    /// The CLI and the interposer cannot share a type across the `cdylib`
+    /// boundary, but they must share this spelling or the level the user
+    /// asked for is not the level recorded.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Metadata => "metadata",
+            Self::Handles => "handles",
+            Self::Replayable => "replayable",
+            Self::Golden => "golden",
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("unknown fidelity {0:?}; expected metadata, handles, replayable or golden")]
+pub struct UnknownFidelity(pub String);
+
+impl std::str::FromStr for Fidelity {
+    type Err = UnknownFidelity;
+
+    fn from_str(name: &str) -> std::result::Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|level| level.name() == name)
+            .ok_or_else(|| UnknownFidelity(name.to_owned()))
+    }
+}
+
+impl std::fmt::Display for Fidelity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// What a record calls the stream the call was issued into.
+///
+/// Capture records CUDA's own spelling and the offline reconstruction finds a
+/// call's stream by this name, so the two sides share one definition: were
+/// they to drift, the happens-before graph would go quietly blind rather than
+/// fail to build.
+pub const STREAM_ARG: &str = "hStream";
+/// What a record calls the event the call records or waits on.
+pub const EVENT_ARG: &str = "hEvent";
+
 /// The host thread a segment belongs to. Capture attributes every record
 /// to the thread that made the call; there is no global ordering (ADR-0004).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -86,6 +140,11 @@ pub struct PayloadRef {
     pub role: String,
     pub blob: BlobId,
     pub len: u64,
+    /// The device allocation these bytes mirror, when the call carrying the
+    /// payload is not the call that named it — a golden output taken at the
+    /// synchronization that finally made an asynchronous read-back valid.
+    #[serde(default)]
+    pub source: Option<HandleId>,
 }
 
 /// One intercepted call as written to a per-thread segment. Ordering is
@@ -100,10 +159,10 @@ pub struct CallRecord {
     pub args: Vec<Argument>,
     pub handles: Vec<HandleBinding>,
     pub payloads: Vec<PayloadRef>,
-    /// The device ordinal this call targeted: the one the call itself names,
-    /// else the one the calling thread's current context belongs to. `None`
-    /// when the call is device-agnostic or no context is current, which is
-    /// what keeps multi-GPU activity in one process distinguishable.
+    /// The `CUdevice` this call targeted: the one the call itself names, else
+    /// the one the calling thread's current context belongs to. `None` when
+    /// the call is device-agnostic or no context is current, which is what
+    /// keeps multi-GPU activity in one process distinguishable.
     pub device: Option<u32>,
 }
 

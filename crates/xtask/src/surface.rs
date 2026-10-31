@@ -53,6 +53,10 @@ impl Surface {
     }
 }
 
+/// How far a type alias is followed before the chain is treated as a cycle.
+/// bindgen emits no such cycle, so this only has to be past any real depth.
+const MAX_ALIAS_DEPTH: usize = 16;
+
 /// How one argument of a shimmed entry point is recorded. [`Recording::Builtin`]
 /// types are the ones `shim::RecordArg` already covers; the rest need an impl
 /// generated alongside the trampolines.
@@ -126,7 +130,7 @@ impl Vocabulary {
     }
 
     fn classify(&self, ty: &Type, depth: usize) -> (Type, Recording) {
-        if depth > 16 {
+        if depth > MAX_ALIAS_DEPTH {
             return (ty.clone(), Recording::Opaque);
         }
         let Type::Path(path) = ty else {
@@ -177,7 +181,7 @@ impl Vocabulary {
     }
 
     fn integer_sign(&self, ty: &Type, depth: usize) -> Option<Recording> {
-        if depth > 16 {
+        if depth > MAX_ALIAS_DEPTH {
             return None;
         }
         let Type::Path(path) = ty else {
@@ -253,43 +257,43 @@ fn named(name: &str) -> Type {
     syn::parse_quote!(#ident)
 }
 
+const UNSIGNED: [&str; 10] = [
+    "u8",
+    "u16",
+    "u32",
+    "u64",
+    "usize",
+    "c_uchar",
+    "c_ushort",
+    "c_uint",
+    "c_ulong",
+    "c_ulonglong",
+];
+const SIGNED: [&str; 11] = [
+    "i8",
+    "i16",
+    "i32",
+    "i64",
+    "isize",
+    "c_char",
+    "c_schar",
+    "c_short",
+    "c_int",
+    "c_long",
+    "c_longlong",
+];
+/// The primitives that are not integers, and so have no sign to record by.
+/// `u128`/`i128` belong here because no C integer type lowers onto them: they
+/// reach a signature only as an opaque width `shim::RecordArg` already covers.
+const UNSIGNABLE: [&str; 7] = ["bool", "f32", "f64", "c_float", "c_double", "u128", "i128"];
+
 fn primitive(name: &str) -> Option<Recording> {
-    let known = [
-        "bool", "f32", "f64", "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32",
-        "i64", "i128", "isize", "c_char", "c_schar", "c_uchar", "c_short", "c_ushort", "c_int",
-        "c_uint", "c_long", "c_ulong", "c_longlong", "c_ulonglong", "c_float", "c_double",
-    ];
-    known.contains(&name).then_some(Recording::Builtin)
+    (UNSIGNABLE.contains(&name) || integer_sign(name).is_some()).then_some(Recording::Builtin)
 }
 
 fn integer_sign(name: &str) -> Option<Recording> {
-    let unsigned = [
-        "u8",
-        "u16",
-        "u32",
-        "u64",
-        "usize",
-        "c_uchar",
-        "c_ushort",
-        "c_uint",
-        "c_ulong",
-        "c_ulonglong",
-    ];
-    let signed = [
-        "i8",
-        "i16",
-        "i32",
-        "i64",
-        "isize",
-        "c_char",
-        "c_schar",
-        "c_short",
-        "c_int",
-        "c_long",
-        "c_longlong",
-    ];
-    if unsigned.contains(&name) {
+    if UNSIGNED.contains(&name) {
         return Some(Recording::Unsigned);
     }
-    signed.contains(&name).then_some(Recording::Signed)
+    SIGNED.contains(&name).then_some(Recording::Signed)
 }

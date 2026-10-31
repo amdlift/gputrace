@@ -1,4 +1,4 @@
-//! A target for the `gputrace capture` wrapper: it makes shimmed driver
+//! A target for `gputrace capture`: it makes shimmed driver
 //! calls, writes to both streams, and exits with the code it is given.
 
 use std::ffi::{c_int, c_uint};

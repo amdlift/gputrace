@@ -17,13 +17,11 @@ use std::sync::{LazyLock, RwLock};
 
 use gputrace_core::{ArgValue, Argument, HandleId};
 
-use crate::handlers::handles::{HandleKind, handle_id};
+use crate::generated::cuda_types::CUcontext;
+use crate::handlers::golden::{self, Settles};
+use crate::handlers::handles::{HandleKind, handle_id, handle_value};
 use crate::recorder;
-use crate::shim::{CUDA_ERROR_NOT_FOUND, CUresult, DriverFn, RecordArg};
-
-const CUDA_SUCCESS: CUresult = 0;
-
-type CUcontext = *mut c_void;
+use crate::shim::{CUDA_ERROR_NOT_FOUND, CUDA_SUCCESS, CUresult, DriverFn, RecordArg};
 
 /// Which device each live context belongs to.
 ///
@@ -58,16 +56,10 @@ fn device_of(context: u64) -> Option<u32> {
     CONTEXT_DEVICES.read().ok()?.get(&context).copied()
 }
 
+/// A context handle is an opaque address with no meaning to a replay; its id
+/// is the whole of what the record can say.
 fn context_arg(context: u64) -> Argument {
-    Argument::new(
-        "ctx",
-        match handle_id(HandleKind::Context, context) {
-            // A context handle is an opaque address with no meaning to a
-            // replay; its id is the whole of what the record can say.
-            Some(id) => ArgValue::Handle(id),
-            None => ArgValue::Null,
-        },
-    )
+    Argument::new("ctx", handle_value(context_id(context)))
 }
 
 fn context_id(context: u64) -> Option<HandleId> {
@@ -233,6 +225,35 @@ macro_rules! report_shims {
     )*};
 }
 
+/// `cuCtxSynchronize`, which blocks the calling thread until everything its
+/// context has been asked to do is done — including every read-back this
+/// thread staged.
+macro_rules! context_sync_shims {
+    ($($symbol:ident($($arg:ident: $ty:ty),*);)*) => {$(
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $symbol($($arg: $ty),*) -> CUresult {
+            static REAL: DriverFn<unsafe extern "C" fn($($ty),*) -> CUresult> =
+                DriverFn::new(concat!(stringify!($symbol), "\0").as_bytes());
+
+            let call = recorder::begin(stringify!($symbol));
+            let deep = call.deep(vec![$(
+                Argument::new(stringify!($arg), RecordArg::record(&$arg))
+            ),*]);
+            let result = match REAL.get() {
+                Some(real) => unsafe { real($($arg),*) },
+                None => CUDA_ERROR_NOT_FOUND,
+            };
+            let deep = if result == CUDA_SUCCESS {
+                unsafe { golden::settle(deep, Settles::Thread) }
+            } else {
+                deep
+            };
+            call.finish_deep(result, deep);
+            result
+        }
+    )*};
+}
+
 create_shims! {
     cuCtxCreate();
     cuCtxCreate_v2();
@@ -258,4 +279,9 @@ leave_shims! {
 
 report_shims! {
     cuCtxGetCurrent;
+}
+
+context_sync_shims! {
+    cuCtxSynchronize();
+    cuCtxSynchronize_v2(ctx: CUcontext);
 }
