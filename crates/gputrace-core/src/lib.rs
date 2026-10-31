@@ -8,7 +8,7 @@ pub mod trace;
 
 pub use backend::Backend;
 pub use bundle::{
-    BundleError, BundleWriter, CaptureConfig, Manifest, SCHEMA_VERSION, SegmentWriter,
+    BlobStore, BundleError, BundleWriter, CaptureConfig, Manifest, SCHEMA_VERSION, SegmentWriter,
     ThreadSummary, TraceBundle,
 };
 pub use trace::{BlobId, CallRecord, Fidelity, HandleId, ThreadId};

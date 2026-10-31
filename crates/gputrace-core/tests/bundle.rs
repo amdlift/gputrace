@@ -109,3 +109,26 @@ fn every_captured_thread_gets_its_own_segment_listed_in_the_manifest() {
         }));
     }
 }
+
+#[test]
+fn identical_payloads_dedup_to_one_content_addressed_blob() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("trace");
+
+    let writer = BundleWriter::create(&root, cuda_capture()).unwrap();
+    let blobs = writer.blobs().clone();
+    let first = blobs.put(b"h2d payload").unwrap();
+    let again = blobs.put(b"h2d payload").unwrap();
+    let other = blobs.put(b"ptx module image").unwrap();
+    writer.finish().unwrap();
+
+    assert_eq!(first, again, "same bytes must yield the same blob id");
+    assert_ne!(first, other);
+
+    let stored = std::fs::read_dir(root.join("blobs")).unwrap().count();
+    assert_eq!(stored, 2, "identical payloads must share one file");
+
+    let bundle = TraceBundle::open(&root).unwrap();
+    assert_eq!(bundle.read_blob(&first).unwrap(), b"h2d payload");
+    assert_eq!(bundle.read_blob(&other).unwrap(), b"ptx module image");
+}

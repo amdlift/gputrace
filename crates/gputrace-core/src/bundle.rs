@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use crate::trace::{CallRecord, Fidelity, ThreadId};
+use crate::trace::{BlobId, CallRecord, Fidelity, ThreadId};
 
 /// Bumped whenever the on-disk layout or record schema changes
 /// incompatibly, so a consumer can refuse a bundle it cannot read.
@@ -15,6 +15,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 
 const MANIFEST_FILE: &str = "manifest.json";
 const SEGMENTS_DIR: &str = "segments";
+const BLOBS_DIR: &str = "blobs";
 
 fn segment_name(thread: ThreadId) -> String {
     format!("{SEGMENTS_DIR}/thread-{}.seg", thread.0)
@@ -73,6 +74,49 @@ impl Default for CaptureConfig {
     }
 }
 
+/// The bundle's content-addressed payload store. Cloning yields another
+/// handle to the same directory, so every capturing thread can share one
+/// store without coordinating: identical payloads collapse onto one file.
+#[derive(Debug, Clone)]
+pub struct BlobStore {
+    dir: Arc<PathBuf>,
+}
+
+impl BlobStore {
+    fn at(root: &Path) -> Self {
+        Self {
+            dir: Arc::new(root.join(BLOBS_DIR)),
+        }
+    }
+
+    fn create(root: &Path) -> Result<Self> {
+        let store = Self::at(root);
+        fs::create_dir_all(store.dir.as_path()).map_err(io(store.dir.as_path()))?;
+        Ok(store)
+    }
+
+    /// Stores `payload` and returns its content hash. A payload already in
+    /// the store is not rewritten.
+    pub fn put(&self, payload: &[u8]) -> Result<BlobId> {
+        let id = BlobId(blake3::hash(payload).to_hex().to_string());
+        let path = self.dir.join(&id.0);
+        if path.exists() {
+            return Ok(id);
+        }
+        // Publish via rename so a concurrent reader never sees a half-written
+        // blob and two threads racing on the same payload cannot interleave.
+        let staging = self.dir.join(format!(".{}.partial", id.0));
+        fs::write(&staging, payload).map_err(io(&staging))?;
+        fs::rename(&staging, &path).map_err(io(&path))?;
+        Ok(id)
+    }
+
+    pub fn get(&self, id: &BlobId) -> Result<Vec<u8>> {
+        let path = self.dir.join(&id.0);
+        fs::read(&path).map_err(io(&path))
+    }
+}
+
 /// One captured host thread: where its records live and how many there are.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadSummary {
@@ -94,6 +138,7 @@ pub struct Manifest {
 pub struct BundleWriter {
     root: PathBuf,
     capture: CaptureConfig,
+    blobs: BlobStore,
     threads: Mutex<Vec<(ThreadId, Arc<AtomicU64>)>>,
 }
 
@@ -101,15 +146,22 @@ impl BundleWriter {
     pub fn create(root: impl AsRef<Path>, capture: CaptureConfig) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
         fs::create_dir_all(&root).map_err(io(&root))?;
+        let blobs = BlobStore::create(&root)?;
         Ok(Self {
             root,
             capture,
+            blobs,
             threads: Mutex::new(Vec::new()),
         })
     }
 
     pub fn path(&self) -> &Path {
         &self.root
+    }
+
+    /// The payload store shared by every segment writer in this bundle.
+    pub fn blobs(&self) -> &BlobStore {
+        &self.blobs
     }
 
     /// Opens an independent writer for one host thread's records. Segment
@@ -194,6 +246,7 @@ impl SegmentWriter {
 pub struct TraceBundle {
     root: PathBuf,
     manifest: Manifest,
+    blobs: BlobStore,
 }
 
 impl TraceBundle {
@@ -203,7 +256,12 @@ impl TraceBundle {
         let json = fs::read_to_string(&path).map_err(io(&path))?;
         let manifest =
             serde_json::from_str(&json).map_err(|source| BundleError::Manifest { path, source })?;
-        Ok(Self { root, manifest })
+        let blobs = BlobStore::at(&root);
+        Ok(Self {
+            root,
+            manifest,
+            blobs,
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -212,6 +270,14 @@ impl TraceBundle {
 
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
+    }
+
+    pub fn blobs(&self) -> &BlobStore {
+        &self.blobs
+    }
+
+    pub fn read_blob(&self, id: &BlobId) -> Result<Vec<u8>> {
+        self.blobs.get(id)
     }
 
     pub fn threads(&self) -> &[ThreadSummary] {
