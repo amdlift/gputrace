@@ -30,8 +30,12 @@ pub fn stub_libcuda() -> Result<&'static Path, TestkitError> {
 
 /// A fixture target binary by its `[[bin]]` name, built on demand.
 pub fn target_bin(name: &str) -> PathBuf {
-    let _ = built();
-    Path::new(PROFILE_DIR).join(name)
+    if let Err(e) = built() {
+        panic!("{e}");
+    }
+    let path = Path::new(PROFILE_DIR).join(name);
+    assert!(path.exists(), "no fixture target at {}", path.display());
+    path
 }
 
 struct Built {
