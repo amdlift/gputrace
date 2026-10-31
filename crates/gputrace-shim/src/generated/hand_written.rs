@@ -33,6 +33,13 @@ macro_rules! pass_through {
     (fn cuMemcpyHtoD $($rest:tt)*) => {};
     (fn cuMemcpyHtoD_v2 $($rest:tt)*) => {};
     (fn cuMemcpyHtoD_v2_ptds $($rest:tt)*) => {};
+    (fn cuMemAllocAsync $($rest:tt)*) => {};
+    (fn cuMemAllocAsync_ptsz $($rest:tt)*) => {};
+    (fn cuMemFreeAsync $($rest:tt)*) => {};
+    (fn cuMemFreeAsync_ptsz $($rest:tt)*) => {};
+    (fn cuMemcpyHtoDAsync $($rest:tt)*) => {};
+    (fn cuMemcpyHtoDAsync_v2 $($rest:tt)*) => {};
+    (fn cuMemcpyHtoDAsync_v2_ptsz $($rest:tt)*) => {};
     // ── Hand-written: `handlers/stream.rs` ──
     (fn cuStreamCreate $($rest:tt)*) => {};
     (fn cuStreamCreateWithPriority $($rest:tt)*) => {};

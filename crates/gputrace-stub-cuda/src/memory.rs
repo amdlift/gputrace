@@ -3,6 +3,7 @@ use std::ffi::{c_uint, c_void};
 use crate::log::note;
 use crate::out;
 use crate::state::{current_context, state};
+use crate::stream::live_stream;
 use crate::types::*;
 
 fn alloc(dptr: *mut CUdeviceptr, bytes: usize) -> CUresult {
@@ -184,4 +185,94 @@ pub extern "C" fn cuMemcpyDtoD_v2(
 pub extern "C" fn cuMemsetD8_v2(dst_device: CUdeviceptr, uc: u8, n: usize) -> CUresult {
     note("cuMemsetD8_v2");
     memset(dst_device, uc, n)
+}
+
+/// The stream-ordered allocator. The stub completes every stream operation
+/// the moment it is asked, so ordering only shows up in what it refuses:
+/// a call naming a stream that was never created.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cuMemAllocAsync(
+    dptr: *mut CUdeviceptr,
+    bytesize: usize,
+    h_stream: CUstream,
+) -> CUresult {
+    note("cuMemAllocAsync");
+    if !live_stream(h_stream) {
+        return CUDA_ERROR_INVALID_HANDLE;
+    }
+    alloc(dptr, bytesize)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cuMemAllocAsync_ptsz(
+    dptr: *mut CUdeviceptr,
+    bytesize: usize,
+    h_stream: CUstream,
+) -> CUresult {
+    note("cuMemAllocAsync_ptsz");
+    if !live_stream(h_stream) {
+        return CUDA_ERROR_INVALID_HANDLE;
+    }
+    alloc(dptr, bytesize)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cuMemFreeAsync(dptr: CUdeviceptr, h_stream: CUstream) -> CUresult {
+    note("cuMemFreeAsync");
+    if !live_stream(h_stream) {
+        return CUDA_ERROR_INVALID_HANDLE;
+    }
+    free(dptr)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cuMemFreeAsync_ptsz(dptr: CUdeviceptr, h_stream: CUstream) -> CUresult {
+    note("cuMemFreeAsync_ptsz");
+    if !live_stream(h_stream) {
+        return CUDA_ERROR_INVALID_HANDLE;
+    }
+    free(dptr)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cuMemcpyHtoDAsync_v2(
+    dst_device: CUdeviceptr,
+    src_host: *const c_void,
+    byte_count: usize,
+    h_stream: CUstream,
+) -> CUresult {
+    note("cuMemcpyHtoDAsync_v2");
+    if !live_stream(h_stream) {
+        return CUDA_ERROR_INVALID_HANDLE;
+    }
+    copy_host_to_device(dst_device, src_host, byte_count)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cuMemcpyHtoDAsync_v2_ptsz(
+    dst_device: CUdeviceptr,
+    src_host: *const c_void,
+    byte_count: usize,
+    h_stream: CUstream,
+) -> CUresult {
+    note("cuMemcpyHtoDAsync_v2_ptsz");
+    if !live_stream(h_stream) {
+        return CUDA_ERROR_INVALID_HANDLE;
+    }
+    copy_host_to_device(dst_device, src_host, byte_count)
+}
+
+/// The pre-CUDA-3.2 spelling: device pointers and sizes were 32-bit.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cuMemcpyHtoDAsync(
+    dst_device: CUdeviceptrV1,
+    src_host: *const c_void,
+    byte_count: c_uint,
+    h_stream: CUstream,
+) -> CUresult {
+    note("cuMemcpyHtoDAsync");
+    if !live_stream(h_stream) {
+        return CUDA_ERROR_INVALID_HANDLE;
+    }
+    copy_host_to_device(CUdeviceptr::from(dst_device), src_host, byte_count as usize)
 }

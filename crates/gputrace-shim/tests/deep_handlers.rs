@@ -2,8 +2,9 @@
 //! handle and device pointer carries a stable id, every consuming call names
 //! it, and a host-to-device copy carries its payload into the blob store.
 
+use gputrace_core::happens_before::{HappensBefore, OpId, Reason};
 use gputrace_core::{ArgValue, BlobId, CallRecord, Fidelity, HandleId, HandleRole, TraceBundle};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use gputrace_testkit::{CaptureRun, Harness, target_bin};
 
@@ -462,5 +463,61 @@ fn every_stream_and_event_call_names_the_handles_it_relates() {
             HandleRole::Destroyed
         ),
         HashSet::from([consumed])
+    );
+}
+
+/// The acceptance criterion of a capture that enforces no order (ADR-0004):
+/// a known edge between two streams must come back out of the bundle. The
+/// producer's copy *after* the event is the control — it is the one the
+/// trace must refuse to order against the consumer.
+#[test]
+fn a_known_cross_stream_edge_is_reconstructable_from_the_bundle() {
+    let run = run("cross_stream");
+    let bundle = run.bundle().expect("bundle");
+    let order = HappensBefore::reconstruct(&bundle).expect("reconstruct the order");
+
+    let copies: HashMap<u8, OpId> = records(&bundle)
+        .iter()
+        .filter(|record| record.function == "cuMemcpyHtoDAsync_v2")
+        .map(|record| {
+            let (blob, len) = payload(record, "host_to_device");
+            let sent = bundle.read_blob(&blob).expect("blob");
+            assert_eq!(len as usize, sent.len());
+            let op = order
+                .ops()
+                .iter()
+                .find(|op| op.function == record.function && op.thread_seq == record.thread_seq)
+                .unwrap_or_else(|| panic!("no stream operation for {record:?}"));
+            (sent[0], op.id)
+        })
+        .collect();
+    assert_eq!(copies.len(), 3, "one copy per fill byte");
+    let (before, after, waiter) = (copies[&0x11], copies[&0x22], copies[&0x33]);
+
+    assert!(
+        order.happens_before(before, waiter),
+        "the event the consumer waited on was recorded after this copy"
+    );
+    assert!(
+        !order.happens_before(after, waiter),
+        "this copy was issued after the event was recorded, so nothing orders it"
+    );
+
+    let crossing: Vec<_> = order
+        .edges()
+        .iter()
+        .filter(|edge| matches!(edge.reason, Reason::Event(_)))
+        .collect();
+    assert_eq!(crossing.len(), 1, "one event joins the two streams");
+    let (record_op, wait_op) = (
+        &order.ops()[crossing[0].from.0],
+        &order.ops()[crossing[0].to.0],
+    );
+    assert_eq!(record_op.function, "cuEventRecord");
+    assert_eq!(wait_op.function, "cuStreamWaitEvent");
+    assert_ne!(record_op.stream, wait_op.stream, "the edge crosses streams");
+    assert_eq!(
+        crossing[0].reason,
+        Reason::Event(record_op.event.expect("an event"))
     );
 }
