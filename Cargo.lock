@@ -254,7 +254,21 @@ name = "gputrace-shim"
 version = "0.1.0"
 dependencies = [
  "gputrace-core",
+ "gputrace-testkit",
  "libloading",
+]
+
+[[package]]
+name = "gputrace-stub-cuda"
+version = "0.1.0"
+
+[[package]]
+name = "gputrace-testkit"
+version = "0.1.0"
+dependencies = [
+ "gputrace-core",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]

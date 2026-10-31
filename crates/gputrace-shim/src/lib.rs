@@ -7,17 +7,8 @@
 //! time and vendored (see ADR-0005); hand-written deep handlers cover the
 //! curated subset. This file is the scaffold entry point only.
 
-use std::sync::OnceLock;
+pub mod real;
 
-use libloading::Library;
-
-static REAL: OnceLock<Library> = OnceLock::new();
-
-/// Lazily `dlopen` the real CUDA driver so trampolines can resolve the
-/// genuine `cu*` entry points at runtime. The shim links no CUDA itself,
-/// so the shipped artifact runs on any Linux with the NVIDIA driver.
-pub fn real_library() -> &'static Library {
-    REAL.get_or_init(|| unsafe {
-        Library::new("libcuda.so.1").expect("gputrace: cannot dlopen libcuda.so.1")
-    })
-}
+pub use real::{
+    DEFAULT_LIBCUDA, LIBCUDA_OVERRIDE_ENV, real_library, real_library_path, real_symbol,
+};
