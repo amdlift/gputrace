@@ -567,13 +567,15 @@ fn capture_config() -> CaptureConfig {
 /// renumbers a confined process's devices from zero, so this is not the
 /// ordinal the records carry — it is the one `--device` named.
 fn selected_device() -> Option<u32> {
-    env::var(VISIBLE_DEVICES_ENV)
-        .ok()?
-        .split(',')
-        .next()?
-        .trim()
-        .parse()
-        .ok()
+    sole_device(&env::var(VISIBLE_DEVICES_ENV).ok()?)
+}
+
+/// The one device `selection` names, or `None` when it names several, none,
+/// or a GPU by something other than an ordinal.
+fn sole_device(selection: &str) -> Option<u32> {
+    let mut devices = selection.split(',');
+    let only = devices.next()?.trim();
+    devices.next().is_none().then(|| only.parse().ok())?
 }
 
 /// How much every shim in this process records, read once. Unset means the
@@ -829,5 +831,34 @@ mod target_device_tests {
             target_device("cuCtxDestroy_v2", &args),
             TargetDevice::Released
         ));
+    }
+}
+
+/// Which GPU a capture was pointed at is only an answer when exactly one was
+/// selected. The cases below do not reach the bundle from any fixture, so
+/// they are pinned here.
+#[cfg(test)]
+mod sole_device_tests {
+    use super::sole_device;
+
+    #[test]
+    fn one_selected_device_is_the_one_the_capture_was_pointed_at() {
+        assert_eq!(sole_device("1"), Some(1));
+        assert_eq!(sole_device(" 2 "), Some(2));
+    }
+
+    #[test]
+    fn a_selection_of_several_devices_names_no_single_one() {
+        assert_eq!(sole_device("0,1"), None);
+    }
+
+    /// CUDA also accepts GPU UUIDs, and an empty selection hides every GPU.
+    #[test]
+    fn a_selection_that_is_not_an_ordinal_is_not_guessed_at() {
+        assert_eq!(
+            sole_device("GPU-dead0000-beef-1234-5678-90abcdef1234"),
+            None
+        );
+        assert_eq!(sole_device(""), None);
     }
 }
