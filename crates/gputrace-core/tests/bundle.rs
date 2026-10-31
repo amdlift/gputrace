@@ -1,6 +1,6 @@
 use gputrace_core::{
-    ArgValue, Argument, BundleWriter, CallRecord, CaptureConfig, Fidelity, HandleBinding, HandleId,
-    HandleRole, PayloadRef, SCHEMA_VERSION, ThreadId, TraceBundle,
+    ArgValue, Argument, BundleError, BundleWriter, CallRecord, CaptureConfig, Fidelity,
+    HandleBinding, HandleId, HandleRole, PayloadRef, SCHEMA_VERSION, ThreadId, TraceBundle,
 };
 
 #[test]
@@ -284,5 +284,28 @@ fn many_threads_write_independent_segments_through_one_shared_blob_store() {
     assert!(
         blobs.iter().all(|name| !name.starts_with('.')),
         "no staging files should survive: {blobs:?}"
+    );
+}
+
+#[test]
+fn a_bundle_written_by_a_newer_schema_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("trace");
+    BundleWriter::create(&root, cuda_capture())
+        .unwrap()
+        .finish()
+        .unwrap();
+
+    let manifest = root.join("manifest.json");
+    let future = std::fs::read_to_string(&manifest).unwrap().replace(
+        &format!("\"schema_version\": {SCHEMA_VERSION}"),
+        &format!("\"schema_version\": {}", SCHEMA_VERSION + 1),
+    );
+    std::fs::write(&manifest, future).unwrap();
+
+    let error = TraceBundle::open(&root).unwrap_err();
+    assert!(
+        matches!(error, BundleError::UnsupportedSchema { found, .. } if found == SCHEMA_VERSION + 1),
+        "expected an unsupported-schema error, got {error}"
     );
 }

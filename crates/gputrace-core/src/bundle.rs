@@ -45,6 +45,12 @@ pub enum BundleError {
     },
     #[error("truncated segment {path}")]
     TruncatedSegment { path: PathBuf },
+    #[error("bundle {path} uses trace schema {found}, this build reads {supported}")]
+    UnsupportedSchema {
+        path: PathBuf,
+        found: u32,
+        supported: u32,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, BundleError>;
@@ -251,6 +257,7 @@ impl SegmentWriter {
 }
 
 /// Reads a trace bundle directory written by [`BundleWriter`].
+#[derive(Debug)]
 pub struct TraceBundle {
     root: PathBuf,
     manifest: Manifest,
@@ -262,8 +269,15 @@ impl TraceBundle {
         let root = root.as_ref().to_path_buf();
         let path = root.join(MANIFEST_FILE);
         let json = fs::read_to_string(&path).map_err(io(&path))?;
-        let manifest =
+        let manifest: Manifest =
             serde_json::from_str(&json).map_err(|source| BundleError::Manifest { path, source })?;
+        if manifest.schema_version != SCHEMA_VERSION {
+            return Err(BundleError::UnsupportedSchema {
+                path: root,
+                found: manifest.schema_version,
+                supported: SCHEMA_VERSION,
+            });
+        }
         let blobs = BlobStore::at(&root);
         Ok(Self {
             root,
