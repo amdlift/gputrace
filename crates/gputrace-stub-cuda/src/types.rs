@@ -40,6 +40,10 @@ pub const STUB_DEVICE_COUNT: c_int = 1;
 /// one GPU in a process. Unset means [`STUB_DEVICE_COUNT`], so every fixture
 /// that does not ask sees exactly the single-device driver it always saw.
 pub const STUB_DEVICES_ENV: &str = "GPUTRACE_STUB_DEVICES";
+/// Names whether a freed device address may be handed out again. Unset means
+/// it may not, so every fixture that does not ask keeps seeing the strictly
+/// increasing pointers it always saw.
+pub const STUB_REUSE_ADDRESSES_ENV: &str = "GPUTRACE_STUB_REUSE_ADDRESSES";
 /// How CUDA confines a process to a subset of the GPUs, which is the whole
 /// mechanism behind `gputrace capture --device`.
 pub const VISIBLE_DEVICES_ENV: &str = "CUDA_VISIBLE_DEVICES";
@@ -91,4 +95,14 @@ pub fn device_name(dev: CUdevice) -> String {
         Some(physical) => format!("gputrace-stub-device-{physical}"),
         None => format!("gputrace-stub-device-{dev}"),
     }
+}
+
+/// Whether the stub hands a freed device address out again, read once. A real
+/// driver does, and a capture that cannot tell two allocations at one address
+/// apart is wrong in a way no bump allocator can expose.
+pub fn reuses_addresses() -> bool {
+    static REUSES: OnceLock<bool> = OnceLock::new();
+    *REUSES.get_or_init(|| {
+        std::env::var_os(STUB_REUSE_ADDRESSES_ENV).is_some_and(|value| !value.is_empty())
+    })
 }

@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::c_void;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
-use crate::types::{CUdevice, CUdeviceptr};
+use crate::types::{CUdevice, CUdeviceptr, reuses_addresses};
 
 const FIRST_HANDLE: usize = 0x0001_0000;
 const HANDLE_STRIDE: usize = 0x100;
@@ -24,6 +24,8 @@ pub struct State {
     pub functions: HashMap<usize, usize>,
     pub streams: HashSet<usize>,
     pub events: HashMap<usize, Option<u64>>,
+    /// Freed device addresses and the span each covers, lowest first.
+    released: BTreeMap<CUdeviceptr, CUdeviceptr>,
     next_handle: usize,
     next_device_ptr: CUdeviceptr,
     next_record: u64,
@@ -68,11 +70,41 @@ impl State {
     }
 
     pub fn allocate(&mut self, bytes: usize) -> CUdeviceptr {
-        let base = self.next_device_ptr;
-        let span = (bytes.max(1) as CUdeviceptr).next_multiple_of(DEVICE_PTR_ALIGNMENT);
-        self.next_device_ptr += span;
+        let span = span_of(bytes);
+        let base = match self.reclaim(span) {
+            Some(base) => base,
+            None => {
+                let base = self.next_device_ptr;
+                self.next_device_ptr += span;
+                base
+            }
+        };
         self.allocations.insert(base, vec![0; bytes]);
         base
+    }
+
+    /// The lowest freed address wide enough for `span`, which is what makes
+    /// reuse reproducible: the same sequence of calls reclaims the same
+    /// address on every run.
+    fn reclaim(&mut self, span: CUdeviceptr) -> Option<CUdeviceptr> {
+        let base = self
+            .released
+            .iter()
+            .find(|&(_, &free)| free >= span)
+            .map(|(&base, _)| base)?;
+        self.released.remove(&base);
+        Some(base)
+    }
+
+    /// Give up the allocation at `ptr`, answering whether it was live.
+    pub fn release(&mut self, ptr: CUdeviceptr) -> bool {
+        let Some(block) = self.allocations.remove(&ptr) else {
+            return false;
+        };
+        if reuses_addresses() {
+            self.released.insert(ptr, span_of(block.len()));
+        }
+        true
     }
 
     /// The allocation backing `[ptr, ptr + len)`, or `None` when the span
@@ -94,11 +126,16 @@ impl Default for State {
             functions: HashMap::new(),
             streams: HashSet::new(),
             events: HashMap::new(),
+            released: BTreeMap::new(),
             next_handle: FIRST_HANDLE,
             next_device_ptr: FIRST_DEVICE_PTR,
             next_record: 0,
         }
     }
+}
+
+fn span_of(bytes: usize) -> CUdeviceptr {
+    (bytes.max(1) as CUdeviceptr).next_multiple_of(DEVICE_PTR_ALIGNMENT)
 }
 
 pub fn state() -> MutexGuard<'static, State> {

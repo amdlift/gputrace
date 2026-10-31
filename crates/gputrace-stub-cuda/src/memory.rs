@@ -22,10 +22,11 @@ fn alloc(dptr: *mut CUdeviceptr, bytes: usize) -> CUresult {
 }
 
 fn free(dptr: CUdeviceptr) -> CUresult {
-    if state().allocations.remove(&dptr).is_none() {
-        return CUDA_ERROR_INVALID_VALUE;
+    if state().release(dptr) {
+        CUDA_SUCCESS
+    } else {
+        CUDA_ERROR_INVALID_VALUE
     }
-    CUDA_SUCCESS
 }
 
 fn copy_host_to_device(dst: CUdeviceptr, src: *const c_void, len: usize) -> CUresult {

@@ -5,6 +5,11 @@
 //! record as one handle: every thread computes the same id from the same raw
 //! value, so identity needs no shared map and no shared counter, and the
 //! record path stays lock-free (ADR-0004).
+//!
+//! An id is therefore stable but not injective over a run: a driver that
+//! hands a freed address back gives two objects one id. Telling those apart
+//! is `gputrace_core::identity`'s job, offline, from the bindings these
+//! handlers record (ADR-0006).
 
 use gputrace_core::HandleId;
 
