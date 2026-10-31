@@ -258,6 +258,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gputrace-stub-cuda"
+version = "0.1.0"
+
+[[package]]
+name = "gputrace-testkit"
+version = "0.1.0"
+dependencies = [
+ "gputrace-core",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "hash32"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

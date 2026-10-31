@@ -1,6 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/gputrace-core", "crates/gputrace-shim", "crates/gputrace"]
+members = [
+    "crates/gputrace-core",
+    "crates/gputrace-shim",
+    "crates/gputrace",
+    "crates/gputrace-stub-cuda",
+    "crates/gputrace-testkit",
+]
 
 [workspace.package]
 version = "0.1.0"
