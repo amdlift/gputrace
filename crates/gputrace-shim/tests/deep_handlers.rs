@@ -473,12 +473,41 @@ fn every_stream_and_event_call_names_the_handles_it_relates() {
 #[test]
 fn a_known_cross_stream_edge_is_reconstructable_from_the_bundle() {
     let run = run("cross_stream");
+    assert_cross_stream_edge(
+        &run,
+        "cuMemcpyHtoDAsync_v2",
+        "cuEventRecord",
+        "cuStreamWaitEvent",
+    );
+}
+
+/// CUDA ships each of these calls under a per-thread-default-stream
+/// spelling too, and a target built with `--default-stream per-thread`
+/// binds those instead. The same scenario through those spellings has to
+/// reconstruct the same edge, or half the builds in the world capture an
+/// order nobody can recover.
+#[test]
+fn the_per_thread_stream_spellings_reconstruct_the_same_edge() {
+    let harness = Harness::new().expect("harness");
+    let run = harness
+        .run(target_bin("cross_stream"), &["ptsz"])
+        .expect("run target");
+    assert!(run.status().success(), "target failed: {}", run.stderr());
+    assert_cross_stream_edge(
+        &run,
+        "cuMemcpyHtoDAsync_v2_ptsz",
+        "cuEventRecord_ptsz",
+        "cuStreamWaitEvent_ptsz",
+    );
+}
+
+fn assert_cross_stream_edge(run: &CaptureRun, copy: &str, event_record: &str, wait: &str) {
     let bundle = run.bundle().expect("bundle");
     let order = HappensBefore::reconstruct(&bundle).expect("reconstruct the order");
 
     let copies: HashMap<u8, OpId> = records(&bundle)
         .iter()
-        .filter(|record| record.function == "cuMemcpyHtoDAsync_v2")
+        .filter(|record| record.function == copy)
         .map(|record| {
             let (blob, len) = payload(record, "host_to_device");
             let sent = bundle.read_blob(&blob).expect("blob");
@@ -513,8 +542,8 @@ fn a_known_cross_stream_edge_is_reconstructable_from_the_bundle() {
         &order.ops()[crossing[0].from.0],
         &order.ops()[crossing[0].to.0],
     );
-    assert_eq!(record_op.function, "cuEventRecord");
-    assert_eq!(wait_op.function, "cuStreamWaitEvent");
+    assert_eq!(record_op.function, event_record);
+    assert_eq!(wait_op.function, wait);
     assert_ne!(record_op.stream, wait_op.stream, "the edge crosses streams");
     assert_eq!(
         crossing[0].reason,
