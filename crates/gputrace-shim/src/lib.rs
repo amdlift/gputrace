@@ -7,6 +7,7 @@
 //! time and vendored (see ADR-0005); hand-written deep handlers cover the
 //! curated subset. Both are written against the one pattern in [`shim`].
 
+mod dispatch;
 mod handlers;
 pub mod real;
 pub mod recorder;
