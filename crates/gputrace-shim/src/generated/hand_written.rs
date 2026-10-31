@@ -15,6 +15,14 @@ macro_rules! pass_through {
     // ── Hand-written: `handlers/device_binding.rs` ──
     (fn cuCtxCreate_v4 $($rest:tt)*) => {};
     (fn cuCtxDestroy_v2 $($rest:tt)*) => {};
+    // ── Hand-written: `handlers/memory.rs` ──
+    (fn cuMemAlloc $($rest:tt)*) => {};
+    (fn cuMemAlloc_v2 $($rest:tt)*) => {};
+    (fn cuMemFree $($rest:tt)*) => {};
+    (fn cuMemFree_v2 $($rest:tt)*) => {};
+    (fn cuMemcpyHtoD $($rest:tt)*) => {};
+    (fn cuMemcpyHtoD_v2 $($rest:tt)*) => {};
+    (fn cuMemcpyHtoD_v2_ptds $($rest:tt)*) => {};
     // ── Hand-written: `dispatch.rs` ──
     (fn cuGetProcAddress $($rest:tt)*) => {};
     (fn cuGetProcAddress_v2 $($rest:tt)*) => {};

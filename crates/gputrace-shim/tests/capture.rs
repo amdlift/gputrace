@@ -151,7 +151,7 @@ fn the_manifest_names_what_was_captured() {
     let manifest = bundle.manifest();
     assert_eq!(manifest.schema_version, gputrace_core::SCHEMA_VERSION);
     assert_eq!(manifest.capture.backend, "cuda");
-    assert_eq!(manifest.capture.fidelity, Fidelity::Metadata);
+    assert_eq!(manifest.capture.fidelity, Fidelity::Replayable);
     assert_eq!(
         manifest.capture.command.first().map(String::as_str),
         target_bin("stub_smoke").to_str()

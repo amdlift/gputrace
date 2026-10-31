@@ -2,4 +2,6 @@
 //! Each module is a `shim!` block; see [`crate::shim`] for the pattern.
 
 mod device_binding;
+mod handles;
 mod init;
+mod memory;
