@@ -251,3 +251,79 @@ fn identical_payloads_are_stored_once_however_many_threads_sent_them() {
         "the store holds one file per distinct payload"
     );
 }
+
+/// The whole point of tracking context lifecycle deeply: in a process using
+/// more than one GPU, every record says which GPU its thread was on, even
+/// when the call itself names no device.
+#[test]
+fn making_a_context_current_moves_the_thread_to_that_contexts_device() {
+    let harness = Harness::new()
+        .expect("harness")
+        .with_env("GPUTRACE_STUB_DEVICES", "2");
+    let run = harness
+        .run(target_bin("ctx_stack"), &[])
+        .expect("run target");
+    assert!(run.status().success(), "target failed: {}", run.stderr());
+
+    let bundle = run.bundle().expect("bundle");
+    let tagged: Vec<(String, Option<u32>)> = records(&bundle)
+        .iter()
+        .map(|record| (record.function.clone(), record.device))
+        .collect();
+
+    let expected = [
+        ("cuInit", None),
+        ("cuDeviceGet", None),
+        ("cuCtxCreate_v4", Some(0)),
+        ("cuDeviceGet", Some(0)),
+        ("cuCtxCreate_v4", Some(1)),
+        ("cuDriverGetVersion", Some(1)),
+        ("cuCtxPushCurrent_v2", Some(0)),
+        ("cuDriverGetVersion", Some(0)),
+        ("cuCtxPopCurrent_v2", Some(0)),
+        ("cuDriverGetVersion", Some(1)),
+        ("cuCtxSetCurrent", Some(0)),
+        ("cuDriverGetVersion", Some(0)),
+        ("cuCtxDestroy_v2", Some(0)),
+        ("cuCtxSetCurrent", Some(1)),
+        ("cuCtxDestroy_v2", Some(1)),
+    ]
+    .map(|(function, device): (&str, Option<u32>)| (function.to_owned(), device));
+
+    assert_eq!(tagged, expected);
+}
+
+#[test]
+fn a_context_is_one_handle_from_the_call_that_made_it_to_the_one_that_ends_it() {
+    let harness = Harness::new()
+        .expect("harness")
+        .with_env("GPUTRACE_STUB_DEVICES", "2");
+    let run = harness
+        .run(target_bin("ctx_stack"), &[])
+        .expect("run target");
+    assert!(run.status().success(), "target failed: {}", run.stderr());
+
+    let bundle = run.bundle().expect("bundle");
+    let records = records(&bundle);
+    let of = |function: &str, role, nth: usize| {
+        bound(
+            records
+                .iter()
+                .filter(|record| record.function == function)
+                .nth(nth)
+                .unwrap_or_else(|| panic!("no {nth}th {function}")),
+            role,
+        )
+    };
+
+    let first = of("cuCtxCreate_v4", HandleRole::Produced, 0);
+    let second = of("cuCtxCreate_v4", HandleRole::Produced, 1);
+    assert_ne!(first, second);
+
+    assert_eq!(of("cuCtxPushCurrent_v2", HandleRole::Consumed, 0), first);
+    assert_eq!(of("cuCtxPopCurrent_v2", HandleRole::Consumed, 0), first);
+    assert_eq!(of("cuCtxSetCurrent", HandleRole::Consumed, 0), first);
+    assert_eq!(of("cuCtxDestroy_v2", HandleRole::Destroyed, 0), first);
+    assert_eq!(of("cuCtxSetCurrent", HandleRole::Consumed, 1), second);
+    assert_eq!(of("cuCtxDestroy_v2", HandleRole::Destroyed, 1), second);
+}

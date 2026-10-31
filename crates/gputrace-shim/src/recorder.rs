@@ -206,6 +206,11 @@ pub fn bind_device(device: Option<u32>) {
     let _ = with_local(|local| local.device = device);
 }
 
+/// The device this thread's calls are currently attributed to.
+pub fn bound_device() -> Option<u32> {
+    with_local(|local| local.device).flatten()
+}
+
 /// Finish the bundle: flush every thread's buffer, stop the writer, and
 /// write the manifest. Idempotent, and a no-op when capture never started.
 pub fn shutdown() {

@@ -12,9 +12,19 @@ macro_rules! pass_through {
     // ── Hand-written: `handlers/init.rs` ──
     (fn cuInit $($rest:tt)*) => {};
     (fn cuDriverGetVersion $($rest:tt)*) => {};
-    // ── Hand-written: `handlers/device_binding.rs` ──
+    // ── Hand-written: `handlers/context.rs` ──
+    (fn cuCtxCreate $($rest:tt)*) => {};
+    (fn cuCtxCreate_v2 $($rest:tt)*) => {};
+    (fn cuCtxCreate_v3 $($rest:tt)*) => {};
     (fn cuCtxCreate_v4 $($rest:tt)*) => {};
+    (fn cuCtxDestroy $($rest:tt)*) => {};
     (fn cuCtxDestroy_v2 $($rest:tt)*) => {};
+    (fn cuCtxGetCurrent $($rest:tt)*) => {};
+    (fn cuCtxPopCurrent $($rest:tt)*) => {};
+    (fn cuCtxPopCurrent_v2 $($rest:tt)*) => {};
+    (fn cuCtxPushCurrent $($rest:tt)*) => {};
+    (fn cuCtxPushCurrent_v2 $($rest:tt)*) => {};
+    (fn cuCtxSetCurrent $($rest:tt)*) => {};
     // ── Hand-written: `handlers/memory.rs` ──
     (fn cuMemAlloc $($rest:tt)*) => {};
     (fn cuMemAlloc_v2 $($rest:tt)*) => {};
