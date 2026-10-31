@@ -71,10 +71,18 @@ fn records_carry_the_per_thread_order_the_calls_were_made_in() {
     let records = records(&bundle);
 
     let functions: Vec<&str> = records.iter().map(|r| r.function.as_str()).collect();
-    assert_eq!(functions, ["cuInit", "cuDriverGetVersion"]);
+    assert_eq!(
+        functions,
+        [
+            "cuInit",
+            "cuDriverGetVersion",
+            "cuDeviceGetCount",
+            "cuDeviceGetName"
+        ]
+    );
     assert_eq!(
         records.iter().map(|r| r.thread_seq).collect::<Vec<_>>(),
-        [0, 1]
+        [0, 1, 2, 3]
     );
     assert!(
         records[0].timestamp_ns > 0 && records[1].timestamp_ns >= records[0].timestamp_ns,
@@ -150,7 +158,7 @@ fn the_manifest_names_what_was_captured() {
     );
     assert_eq!(
         manifest.threads.iter().map(|t| t.records).sum::<u64>(),
-        2,
+        4,
         "one summary row per thread, counting that thread's records"
     );
 }
