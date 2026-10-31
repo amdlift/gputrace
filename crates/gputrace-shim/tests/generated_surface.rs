@@ -67,3 +67,20 @@ fn a_hand_written_shim_keeps_the_symbol_to_itself() {
         Some("driver_version"),
     );
 }
+
+/// ADR-0005: a downstream build compiles the vendored output and nothing
+/// else. bindgen reaching the workspace's dependency graph — even behind a
+/// feature, which `--all-features` would switch back on — is how that
+/// promise breaks without anyone noticing.
+#[test]
+fn nothing_in_the_workspace_depends_on_bindgen() {
+    let lockfile = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock");
+    let locked = std::fs::read_to_string(&lockfile).expect("the workspace lockfile");
+    for crate_name in ["bindgen", "clang-sys", "prettyplease"] {
+        assert!(
+            !locked.contains(&format!("name = \"{crate_name}\"")),
+            "{crate_name} is in {}: the generated surface must stay vendored",
+            lockfile.display()
+        );
+    }
+}
