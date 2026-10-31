@@ -13,6 +13,7 @@ use std::ffi::{c_uint, c_void};
 use gputrace_core::{ArgValue, Argument};
 
 use crate::handlers::handles::{HandleKind, handle_id};
+use crate::handlers::stream::{stream_arg, stream_of};
 use crate::recorder;
 use crate::shim::{CUDA_ERROR_NOT_FOUND, CUresult, DriverFn, RecordArg};
 
@@ -108,6 +109,110 @@ macro_rules! copy_to_device_shims {
     )*};
 }
 
+/// The stream-ordered allocator. It is the same allocation a replay has to
+/// remap as the synchronous one, and it is also an operation in a stream's
+/// order, so it records both: the pointer it produced and the stream it was
+/// issued into.
+macro_rules! alloc_async_shims {
+    ($($symbol:ident;)*) => {$(
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $symbol(
+            dptr: *mut u64,
+            bytesize: usize,
+            h_stream: *mut c_void,
+        ) -> CUresult {
+            static REAL: DriverFn<
+                unsafe extern "C" fn(*mut u64, usize, *mut c_void) -> CUresult,
+            > = DriverFn::new(concat!(stringify!($symbol), "\0").as_bytes());
+
+            let call = recorder::begin(stringify!($symbol));
+            let result = match REAL.get() {
+                Some(real) => unsafe { real(dptr, bytesize, h_stream) },
+                None => CUDA_ERROR_NOT_FOUND,
+            };
+            let allocated = if result == CUDA_SUCCESS && !dptr.is_null() {
+                unsafe { *dptr }
+            } else {
+                0
+            };
+            let deep = call
+                .deep(vec![
+                    Argument::new("dptr", ArgValue::DevicePtr(allocated)),
+                    Argument::new("bytesize", RecordArg::record(&bytesize)),
+                    stream_arg(h_stream),
+                ])
+                .produces(handle_id(HandleKind::DevicePtr, allocated))
+                .consumes(Some(stream_of(h_stream)));
+            call.finish_deep(result, deep);
+            result
+        }
+    )*};
+}
+
+macro_rules! free_async_shims {
+    ($($symbol:ident;)*) => {$(
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $symbol(dptr: u64, h_stream: *mut c_void) -> CUresult {
+            static REAL: DriverFn<unsafe extern "C" fn(u64, *mut c_void) -> CUresult> =
+                DriverFn::new(concat!(stringify!($symbol), "\0").as_bytes());
+
+            let call = recorder::begin(stringify!($symbol));
+            let deep = call
+                .deep(vec![
+                    Argument::new("dptr", ArgValue::DevicePtr(dptr)),
+                    stream_arg(h_stream),
+                ])
+                .destroys(handle_id(HandleKind::DevicePtr, dptr))
+                .consumes(Some(stream_of(h_stream)));
+            let result = match REAL.get() {
+                Some(real) => unsafe { real(dptr, h_stream) },
+                None => CUDA_ERROR_NOT_FOUND,
+            };
+            call.finish_deep(result, deep);
+            result
+        }
+    )*};
+}
+
+/// `cuMemcpyHtoDAsync`. The caller may overwrite its buffer as soon as the
+/// call returns even though the copy has not run yet, so staging before
+/// forwarding is not an optimisation here — it is the only correct moment.
+macro_rules! copy_to_device_async_shims {
+    ($($symbol:ident($pointer:ty, $size:ty);)*) => {$(
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $symbol(
+            dst_device: $pointer,
+            src_host: *const c_void,
+            byte_count: $size,
+            h_stream: *mut c_void,
+        ) -> CUresult {
+            static REAL: DriverFn<
+                unsafe extern "C" fn($pointer, *const c_void, $size, *mut c_void) -> CUresult,
+            > = DriverFn::new(concat!(stringify!($symbol), "\0").as_bytes());
+
+            let destination = u64::from(dst_device);
+            let call = recorder::begin(stringify!($symbol));
+            let deep = unsafe {
+                call.deep(vec![
+                    Argument::new("dstDevice", ArgValue::DevicePtr(destination)),
+                    Argument::new("srcHost", ArgValue::HostPtr(src_host as usize as u64)),
+                    Argument::new("ByteCount", RecordArg::record(&byte_count)),
+                    stream_arg(h_stream),
+                ])
+                .consumes(handle_id(HandleKind::DevicePtr, destination))
+                .consumes(Some(stream_of(h_stream)))
+                .payload(HOST_TO_DEVICE, src_host.cast::<u8>(), byte_count as usize)
+            };
+            let result = match REAL.get() {
+                Some(real) => unsafe { real(dst_device, src_host, byte_count, h_stream) },
+                None => CUDA_ERROR_NOT_FOUND,
+            };
+            call.finish_deep(result, deep);
+            result
+        }
+    )*};
+}
+
 /// What a staged host-to-device buffer is called in a record's payloads.
 pub(crate) const HOST_TO_DEVICE: &str = "host_to_device";
 
@@ -125,4 +230,20 @@ copy_to_device_shims! {
     cuMemcpyHtoD(c_uint, c_uint);
     cuMemcpyHtoD_v2(u64, usize);
     cuMemcpyHtoD_v2_ptds(u64, usize);
+}
+
+alloc_async_shims! {
+    cuMemAllocAsync;
+    cuMemAllocAsync_ptsz;
+}
+
+free_async_shims! {
+    cuMemFreeAsync;
+    cuMemFreeAsync_ptsz;
+}
+
+copy_to_device_async_shims! {
+    cuMemcpyHtoDAsync(c_uint, c_uint);
+    cuMemcpyHtoDAsync_v2(u64, usize);
+    cuMemcpyHtoDAsync_v2_ptsz(u64, usize);
 }

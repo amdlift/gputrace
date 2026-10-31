@@ -33,6 +33,39 @@ macro_rules! pass_through {
     (fn cuMemcpyHtoD $($rest:tt)*) => {};
     (fn cuMemcpyHtoD_v2 $($rest:tt)*) => {};
     (fn cuMemcpyHtoD_v2_ptds $($rest:tt)*) => {};
+    (fn cuMemAllocAsync $($rest:tt)*) => {};
+    (fn cuMemAllocAsync_ptsz $($rest:tt)*) => {};
+    (fn cuMemFreeAsync $($rest:tt)*) => {};
+    (fn cuMemFreeAsync_ptsz $($rest:tt)*) => {};
+    (fn cuMemcpyHtoDAsync $($rest:tt)*) => {};
+    (fn cuMemcpyHtoDAsync_v2 $($rest:tt)*) => {};
+    (fn cuMemcpyHtoDAsync_v2_ptsz $($rest:tt)*) => {};
+    // ── Hand-written: `handlers/launch.rs` ──
+    (fn cuLaunchKernel $($rest:tt)*) => {};
+    (fn cuLaunchKernel_ptsz $($rest:tt)*) => {};
+    // ── Hand-written: `handlers/module.rs` ──
+    (fn cuModuleLoadData $($rest:tt)*) => {};
+    (fn cuModuleLoadDataEx $($rest:tt)*) => {};
+    (fn cuModuleLoadFatBinary $($rest:tt)*) => {};
+    (fn cuModuleGetFunction $($rest:tt)*) => {};
+    (fn cuModuleUnload $($rest:tt)*) => {};
+    // ── Hand-written: `handlers/stream.rs` ──
+    (fn cuStreamCreate $($rest:tt)*) => {};
+    (fn cuStreamCreateWithPriority $($rest:tt)*) => {};
+    (fn cuStreamDestroy $($rest:tt)*) => {};
+    (fn cuStreamDestroy_v2 $($rest:tt)*) => {};
+    (fn cuStreamSynchronize $($rest:tt)*) => {};
+    (fn cuStreamSynchronize_ptsz $($rest:tt)*) => {};
+    (fn cuStreamWaitEvent $($rest:tt)*) => {};
+    (fn cuStreamWaitEvent_ptsz $($rest:tt)*) => {};
+    (fn cuEventCreate $($rest:tt)*) => {};
+    (fn cuEventDestroy $($rest:tt)*) => {};
+    (fn cuEventDestroy_v2 $($rest:tt)*) => {};
+    (fn cuEventRecord $($rest:tt)*) => {};
+    (fn cuEventRecord_ptsz $($rest:tt)*) => {};
+    (fn cuEventRecordWithFlags $($rest:tt)*) => {};
+    (fn cuEventRecordWithFlags_ptsz $($rest:tt)*) => {};
+    (fn cuEventSynchronize $($rest:tt)*) => {};
     // ── Hand-written: `dispatch.rs` ──
     (fn cuGetProcAddress $($rest:tt)*) => {};
     (fn cuGetProcAddress_v2 $($rest:tt)*) => {};

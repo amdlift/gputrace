@@ -2,8 +2,9 @@
 //! handle and device pointer carries a stable id, every consuming call names
 //! it, and a host-to-device copy carries its payload into the blob store.
 
+use gputrace_core::happens_before::{HappensBefore, OpId, Reason};
 use gputrace_core::{ArgValue, BlobId, CallRecord, Fidelity, HandleId, HandleRole, TraceBundle};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use gputrace_testkit::{CaptureRun, Harness, target_bin};
 
@@ -359,4 +360,321 @@ fn an_older_spelling_of_a_call_records_exactly_as_the_current_one_does() {
         context
     );
     assert_ne!(context, allocation);
+}
+
+/// What a stream/event fixture prints: the raw handle behind a label.
+fn reported(run: &CaptureRun, label: &str) -> u64 {
+    let line = run
+        .stdout()
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{label}=")))
+        .unwrap_or_else(|| panic!("the fixture reports {label}"));
+    u64::from_str_radix(line.trim_start_matches("0x"), 16).expect("handle")
+}
+
+fn handle_arg(record: &CallRecord, name: &str) -> HandleId {
+    match arg(record, name) {
+        ArgValue::Handle(id) => id,
+        other => panic!(
+            "{} records {name} as {other:?}, not a handle",
+            record.function
+        ),
+    }
+}
+
+fn bound_all(record: &CallRecord, role: HandleRole) -> HashSet<HandleId> {
+    record
+        .handles
+        .iter()
+        .filter(|binding| binding.role == role)
+        .map(|binding| binding.id)
+        .collect()
+}
+
+fn nth(records: &[CallRecord], function: &str, index: usize) -> CallRecord {
+    records
+        .iter()
+        .filter(|record| record.function == function)
+        .nth(index)
+        .unwrap_or_else(|| panic!("no {index}th {function} record"))
+        .clone()
+}
+
+/// Streams and events are the handles the happens-before order is made of:
+/// every call that touches one has to name it, or the edge between two
+/// streams cannot be found again offline.
+#[test]
+fn every_stream_and_event_call_names_the_handles_it_relates() {
+    let run = run("stream_event");
+    let (producer, consumer) = (reported(&run, "producer"), reported(&run, "consumer"));
+    let bundle = run.bundle().expect("bundle");
+    let records = records(&bundle);
+
+    let created = |index| {
+        let create = nth(&records, "cuStreamCreate", index);
+        let id = handle_arg(&create, "hStream");
+        assert_eq!(
+            bound_all(&create, HandleRole::Produced),
+            HashSet::from([id])
+        );
+        id
+    };
+    let (produced, consumed) = (created(0), created(1));
+    assert_ne!(produced, consumed, "{producer:#x} and {consumer:#x}");
+
+    let start = handle_arg(&nth(&records, "cuEventCreate", 0), "hEvent");
+    let finish = handle_arg(&nth(&records, "cuEventCreate", 1), "hEvent");
+    assert_ne!(start, finish);
+
+    let record_start = nth(&records, "cuEventRecord", 0);
+    assert_eq!(handle_arg(&record_start, "hEvent"), start);
+    assert_eq!(handle_arg(&record_start, "hStream"), produced);
+    assert_eq!(
+        bound_all(&record_start, HandleRole::Consumed),
+        HashSet::from([start, produced])
+    );
+
+    let wait = record(&records, "cuStreamWaitEvent");
+    assert_eq!(handle_arg(&wait, "hStream"), consumed);
+    assert_eq!(handle_arg(&wait, "hEvent"), start);
+    assert_eq!(
+        bound_all(&wait, HandleRole::Consumed),
+        HashSet::from([start, consumed])
+    );
+
+    assert_eq!(
+        handle_arg(&nth(&records, "cuStreamSynchronize", 0), "hStream"),
+        produced
+    );
+    assert_eq!(
+        handle_arg(&record(&records, "cuEventSynchronize"), "hEvent"),
+        finish
+    );
+    assert_eq!(
+        bound_all(
+            &record(&records, "cuEventDestroy_v2"),
+            HandleRole::Destroyed
+        ),
+        HashSet::from([finish])
+    );
+    assert_eq!(
+        bound_all(
+            &record(&records, "cuStreamDestroy_v2"),
+            HandleRole::Destroyed
+        ),
+        HashSet::from([consumed])
+    );
+}
+
+/// The acceptance criterion of a capture that enforces no order (ADR-0004):
+/// a known edge between two streams must come back out of the bundle. The
+/// producer's copy *after* the event is the control — it is the one the
+/// trace must refuse to order against the consumer.
+#[test]
+fn a_known_cross_stream_edge_is_reconstructable_from_the_bundle() {
+    let run = run("cross_stream");
+    assert_cross_stream_edge(
+        &run,
+        "cuMemcpyHtoDAsync_v2",
+        "cuEventRecord",
+        "cuStreamWaitEvent",
+    );
+}
+
+/// CUDA ships each of these calls under a per-thread-default-stream
+/// spelling too, and a target built with `--default-stream per-thread`
+/// binds those instead. The same scenario through those spellings has to
+/// reconstruct the same edge, or half the builds in the world capture an
+/// order nobody can recover.
+#[test]
+fn the_per_thread_stream_spellings_reconstruct_the_same_edge() {
+    let harness = Harness::new().expect("harness");
+    let run = harness
+        .run(target_bin("cross_stream"), &["ptsz"])
+        .expect("run target");
+    assert!(run.status().success(), "target failed: {}", run.stderr());
+    assert_cross_stream_edge(
+        &run,
+        "cuMemcpyHtoDAsync_v2_ptsz",
+        "cuEventRecord_ptsz",
+        "cuStreamWaitEvent_ptsz",
+    );
+}
+
+fn assert_cross_stream_edge(run: &CaptureRun, copy: &str, event_record: &str, wait: &str) {
+    let bundle = run.bundle().expect("bundle");
+    let order = HappensBefore::reconstruct(&bundle).expect("reconstruct the order");
+
+    let copies: HashMap<u8, OpId> = records(&bundle)
+        .iter()
+        .filter(|record| record.function == copy)
+        .map(|record| {
+            let (blob, len) = payload(record, "host_to_device");
+            let sent = bundle.read_blob(&blob).expect("blob");
+            assert_eq!(len as usize, sent.len());
+            let op = order
+                .ops()
+                .iter()
+                .find(|op| op.function == record.function && op.thread_seq == record.thread_seq)
+                .unwrap_or_else(|| panic!("no stream operation for {record:?}"));
+            (sent[0], op.id)
+        })
+        .collect();
+    assert_eq!(copies.len(), 3, "one copy per fill byte");
+    let (before, after, waiter) = (copies[&0x11], copies[&0x22], copies[&0x33]);
+
+    assert!(
+        order.happens_before(before, waiter),
+        "the event the consumer waited on was recorded after this copy"
+    );
+    assert!(
+        !order.happens_before(after, waiter),
+        "this copy was issued after the event was recorded, so nothing orders it"
+    );
+
+    let crossing: Vec<_> = order
+        .edges()
+        .iter()
+        .filter(|edge| matches!(edge.reason, Reason::Event(_)))
+        .collect();
+    assert_eq!(crossing.len(), 1, "one event joins the two streams");
+    let (record_op, wait_op) = (
+        &order.ops()[crossing[0].from.0],
+        &order.ops()[crossing[0].to.0],
+    );
+    assert_eq!(record_op.function, event_record);
+    assert_eq!(wait_op.function, wait);
+    assert_ne!(record_op.stream, wait_op.stream, "the edge crosses streams");
+    assert_eq!(
+        crossing[0].reason,
+        Reason::Event(record_op.event.expect("an event"))
+    );
+}
+
+/// What `module_launch` loads. The image is nul-terminated PTX, and the
+/// ABI hands the driver nothing but that pointer, so the capture is only
+/// right if it read exactly as far as the format says.
+const PTX: &[u8] = b".version 8.0\n.target sm_86\n.visible .entry kernel_a() { ret; }\n.visible .entry kernel_b() { ret; }\n";
+
+#[test]
+fn a_loaded_module_image_is_captured_as_a_blob_the_load_record_names() {
+    let run = run("module_launch");
+    let bundle = run.bundle().expect("bundle");
+    let records = records(&bundle);
+
+    let load = record(&records, "cuModuleLoadData");
+    let (blob, len) = payload(&load, "module_image");
+    assert_eq!(len, PTX.len() as u64);
+    assert_eq!(bundle.read_blob(&blob).expect("blob"), PTX);
+}
+
+/// A kernel is reached by name through the module that defines it, and the
+/// name is the only thing in the call a replay could look the kernel up by.
+#[test]
+fn a_kernel_lookup_names_its_module_and_the_name_it_asked_for() {
+    let run = run("module_launch");
+    let bundle = run.bundle().expect("bundle");
+    let records = records(&bundle);
+
+    let module = bound(&record(&records, "cuModuleLoadData"), HandleRole::Produced);
+    let looked_up = |index: usize| {
+        let lookup = nth(&records, "cuModuleGetFunction", index);
+        assert_eq!(handle_arg(&lookup, "hmod"), module);
+        (arg(&lookup, "name"), lookup)
+    };
+
+    let (first_name, first) = looked_up(0);
+    let (again_name, again) = looked_up(1);
+    let (other_name, other) = looked_up(2);
+    assert_eq!(first_name, ArgValue::Str("kernel_a".to_owned()));
+    assert_eq!(again_name, ArgValue::Str("kernel_a".to_owned()));
+    assert_eq!(other_name, ArgValue::Str("kernel_b".to_owned()));
+
+    let kernel_a = bound(&first, HandleRole::Produced);
+    assert_eq!(bound(&again, HandleRole::Produced), kernel_a);
+    assert_ne!(bound(&other, HandleRole::Produced), kernel_a);
+    assert_ne!(kernel_a, module, "a function is not its module");
+
+    let missing = looked_up(3).1;
+    assert_ne!(
+        missing.result, 0,
+        "the fixture asks for a kernel that is absent"
+    );
+    assert!(
+        missing
+            .handles
+            .iter()
+            .all(|binding| binding.role != HandleRole::Produced)
+    );
+
+    assert_eq!(
+        bound(&record(&records, "cuModuleUnload"), HandleRole::Destroyed),
+        module
+    );
+}
+
+/// What `launch_params` packs into its `extra` buffer.
+const PACKED: [u8; 12] = [7, 0, 0, 0, 0, 0, 0xc0, 0x3f, 0xef, 0xbe, 0xad, 0xde];
+
+#[test]
+fn a_launch_records_its_configuration_and_the_kernel_it_ran() {
+    let run = run("launch_params");
+    let bundle = run.bundle().expect("bundle");
+    let records = records(&bundle);
+
+    let kernel = bound(
+        &record(&records, "cuModuleGetFunction"),
+        HandleRole::Produced,
+    );
+    let stream = handle_arg(&record(&records, "cuStreamCreate"), "hStream");
+
+    let launch = nth(&records, "cuLaunchKernel", 0);
+    assert_eq!(handle_arg(&launch, "f"), kernel);
+    assert_eq!(handle_arg(&launch, "hStream"), stream);
+    assert_eq!(
+        bound_all(&launch, HandleRole::Consumed),
+        HashSet::from([kernel, stream])
+    );
+    for (name, value) in [
+        ("gridDimX", 4),
+        ("gridDimY", 2),
+        ("gridDimZ", 1),
+        ("blockDimX", 64),
+        ("blockDimY", 8),
+        ("blockDimZ", 1),
+        ("sharedMemBytes", 256),
+    ] {
+        assert_eq!(arg(&launch, name), ArgValue::Unsigned(value), "{name}");
+    }
+}
+
+/// The `extra` packing states the size of the argument buffer, so the whole
+/// buffer is recoverable byte for byte.
+#[test]
+fn a_launch_packed_through_extra_carries_its_parameter_buffer() {
+    let run = run("launch_params");
+    let bundle = run.bundle().expect("bundle");
+
+    let launch = nth(&records(&bundle), "cuLaunchKernel", 0);
+    let (blob, len) = payload(&launch, "kernel_params");
+    assert_eq!(len, PACKED.len() as u64);
+    assert_eq!(bundle.read_blob(&blob).expect("blob"), PACKED);
+}
+
+/// `kernelParams` is a bare `void**`: no count, no element sizes, nothing
+/// at the ABI level that says how far it is safe to read. Capture records
+/// that the launch used it and refuses to invent a size.
+#[test]
+fn a_launch_through_the_bare_pointer_array_records_it_without_a_payload() {
+    let run = run("launch_params");
+    let array = reported(&run, "kernel_params");
+    let bundle = run.bundle().expect("bundle");
+
+    let launch = nth(&records(&bundle), "cuLaunchKernel", 1);
+    assert_eq!(arg(&launch, "kernelParams"), ArgValue::HostPtr(array));
+    assert_eq!(arg(&launch, "extra"), ArgValue::HostPtr(0));
+    assert!(
+        launch.payloads.is_empty(),
+        "no size is recoverable, so nothing is stored"
+    );
 }

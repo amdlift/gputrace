@@ -4,4 +4,7 @@
 mod context;
 mod handles;
 mod init;
+mod launch;
 mod memory;
+mod module;
+mod stream;
