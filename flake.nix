@@ -16,6 +16,8 @@
         rustfmt
         clippy
         rust-analyzer
+
+        (python314.withPackages (ps: with ps; [ ]))
       ];
       env.RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
     };
