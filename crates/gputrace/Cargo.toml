@@ -12,3 +12,8 @@ path = "src/main.rs"
 [dependencies]
 gputrace-core.workspace = true
 clap.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+gputrace-testkit = { path = "../gputrace-testkit" }
+tempfile.workspace = true
