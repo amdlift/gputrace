@@ -9,8 +9,8 @@ pub mod trace;
 
 pub use backend::Backend;
 pub use bundle::{
-    BlobStore, BundleError, BundleWriter, CaptureConfig, Manifest, SCHEMA_VERSION, SegmentWriter,
-    ThreadSummary, TraceBundle,
+    BlobStore, BundleError, BundleWriter, CaptureConfig, ComputeCapability, DeviceSummary,
+    Environment, Manifest, SCHEMA_VERSION, SegmentWriter, ThreadSummary, TraceBundle,
 };
 pub use happens_before::HappensBefore;
 pub use trace::{

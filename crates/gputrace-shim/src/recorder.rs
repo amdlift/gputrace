@@ -10,8 +10,8 @@
 //! not depend on every recording thread having exited first.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::ffi::c_int;
 use std::path::PathBuf;
@@ -22,9 +22,11 @@ use std::thread::{self, JoinHandle, Thread};
 use std::time::Duration;
 
 use gputrace_core::{
-    ArgValue, Argument, BundleWriter, CallRecord, CaptureConfig, Fidelity, HandleBinding, HandleId,
-    HandleRole, PayloadRef, SegmentWriter, ThreadId,
+    ArgValue, Argument, BundleWriter, CallRecord, CaptureConfig, DeviceSummary, Environment,
+    Fidelity, HandleBinding, HandleId, HandleRole, PayloadRef, SegmentWriter, ThreadId,
 };
+
+use crate::environment;
 
 /// Names the directory the interposer writes its trace bundle to. Unset or
 /// empty means no capture: the shims forward and record nothing.
@@ -459,6 +461,7 @@ fn start() -> Option<Capture> {
 
 fn drain_to_bundle(queue: &Queue, bundle: BundleWriter) {
     let mut segments: HashMap<ThreadId, SegmentWriter> = HashMap::new();
+    let mut observed = Observed::default();
     let outcome = (|| -> gputrace_core::bundle::Result<()> {
         loop {
             // Read the flag before draining: shutdown queues every thread's
@@ -473,6 +476,7 @@ fn drain_to_bundle(queue: &Queue, bundle: BundleWriter) {
                     Entry::Vacant(entry) => entry.insert(bundle.open_segment(chunk.thread)?),
                 };
                 for mut call in chunk.calls {
+                    observed.saw(&call.record);
                     for staged in std::mem::take(&mut call.payloads) {
                         let blob = bundle.blobs().put(&staged.bytes)?;
                         call.record.payloads.push(PayloadRef {
@@ -498,9 +502,50 @@ fn drain_to_bundle(queue: &Queue, bundle: BundleWriter) {
 
     let finished = outcome
         .and_then(|()| segments.into_values().try_for_each(SegmentWriter::finish))
-        .and_then(|()| bundle.finish());
+        .and_then(|()| bundle.finish_with(observed.describe()));
     if let Err(e) = finished {
         eprintln!("gputrace: capture incomplete: {e}");
+    }
+}
+
+/// What the trace says about the GPUs it ran against, accumulated by the
+/// writer thread as records pass through it.
+///
+/// The driver is asked about a device the first time a record names one:
+/// on this thread, so no capturing thread waits for the answer, and while
+/// the target is still running, rather than at exit when the driver may
+/// already be tearing itself down.
+#[derive(Default)]
+struct Observed {
+    driver_version: Option<u32>,
+    asked_for_the_version: bool,
+    devices: BTreeMap<u32, DeviceSummary>,
+}
+
+impl Observed {
+    fn saw(&mut self, record: &CallRecord) {
+        if !self.asked_for_the_version {
+            self.asked_for_the_version = true;
+            self.driver_version = environment::driver_version();
+        }
+        let Some(ordinal) = record.device else {
+            return;
+        };
+        self.devices
+            .entry(ordinal)
+            .or_insert_with(|| DeviceSummary {
+                ordinal,
+                compute_capability: environment::compute_capability(ordinal),
+                records: 0,
+            })
+            .records += 1;
+    }
+
+    fn describe(self) -> Environment {
+        Environment {
+            driver_version: self.driver_version,
+            devices: self.devices.into_values().collect(),
+        }
     }
 }
 

@@ -1,6 +1,7 @@
 //! End-to-end capture: a target runs under the interposer with the stub
 //! driver behind it, and the trace bundle is read back and asserted on.
 
+use gputrace_core::bundle::{ComputeCapability, DeviceSummary};
 use gputrace_core::{ArgValue, CallRecord, Fidelity, TraceBundle};
 use gputrace_testkit::{Harness, target_bin};
 
@@ -48,9 +49,15 @@ fn a_recorded_call_still_reaches_the_driver_and_returns_its_answer() {
             "cuInit",
             "cuDriverGetVersion",
             "cuDeviceGetCount",
-            "cuDeviceGetName"
+            "cuDeviceGetName",
+            // Capture's own traffic: one description of the environment for
+            // the manifest, asked once per process and per device used.
+            "cuDriverGetVersion",
+            "cuDeviceGetAttribute",
+            "cuDeviceGetAttribute",
         ],
-        "the shim must forward, and must not disturb entry points it does not shim"
+        "the shim must forward, must not disturb entry points it does not \
+         shim, and must add nothing beyond describing the environment once"
     );
     assert_eq!(
         run.stdout(),
@@ -135,7 +142,8 @@ fn every_host_thread_gets_its_own_segment_and_its_own_sequence() {
     assert_eq!(workers, THREADS);
     assert_eq!(
         run.stub_call_count("cuDriverGetVersion"),
-        THREADS * CALLS_PER_THREAD
+        THREADS * CALLS_PER_THREAD + 1,
+        "every call forwarded, plus capture's one question for the manifest"
     );
 }
 
@@ -160,6 +168,95 @@ fn the_manifest_names_what_was_captured() {
         manifest.threads.iter().map(|t| t.records).sum::<u64>(),
         4,
         "one summary row per thread, counting that thread's records"
+    );
+}
+
+/// A bundle outlives the machine it was taken on, so replay can only warn
+/// about an incompatible environment if the manifest says what the capture
+/// ran against.
+#[test]
+fn the_manifest_records_the_driver_and_the_gpu_the_capture_ran_against() {
+    let harness = Harness::new().expect("harness");
+    let run = harness
+        .run(target_bin("stub_smoke"), &[])
+        .expect("run target");
+    assert!(run.status().success(), "target failed: {}", run.stderr());
+
+    let bundle = run.bundle().expect("bundle");
+    let environment = &bundle.manifest().environment;
+    assert_eq!(environment.driver_version, Some(13040));
+    assert_eq!(
+        environment.devices,
+        [DeviceSummary {
+            ordinal: 0,
+            compute_capability: Some(ComputeCapability { major: 8, minor: 6 }),
+            records: 1,
+        }],
+        "the one device the target's calls named, as the driver describes it"
+    );
+}
+
+/// The manifest's device summary is an index into the records: a reader has
+/// to be able to tell from it which GPUs a multi-GPU process used and how
+/// busy each one was, without reading every segment first.
+#[test]
+fn a_multi_gpu_capture_describes_every_device_its_records_named() {
+    let harness = Harness::new()
+        .expect("harness")
+        .with_env("GPUTRACE_STUB_DEVICES", "2");
+    let run = harness
+        .run(target_bin("capture_devices"), &[])
+        .expect("run target");
+    assert!(run.status().success(), "target failed: {}", run.stderr());
+
+    let bundle = run.bundle().expect("bundle");
+    let records = records(&bundle);
+    let summaries = &bundle.manifest().environment.devices;
+    assert_eq!(
+        summaries
+            .iter()
+            .map(|device| device.ordinal)
+            .collect::<Vec<_>>(),
+        [0, 1]
+    );
+    for device in summaries {
+        assert_eq!(
+            device.compute_capability,
+            Some(ComputeCapability { major: 8, minor: 6 })
+        );
+        let tagged = records
+            .iter()
+            .filter(|record| record.device == Some(device.ordinal))
+            .count();
+        assert!(tagged > 0, "device {} never appeared", device.ordinal);
+        assert_eq!(device.records as usize, tagged, "device {}", device.ordinal);
+    }
+}
+
+/// Capture asks the driver two questions of its own. The answers belong in
+/// the manifest and nowhere else: a record the target never made would be
+/// indistinguishable from one it did.
+#[test]
+fn describing_the_environment_adds_nothing_to_what_the_target_called() {
+    let harness = Harness::new().expect("harness");
+    let run = harness
+        .run(target_bin("stub_smoke"), &[])
+        .expect("run target");
+    assert!(run.status().success(), "target failed: {}", run.stderr());
+
+    let bundle = run.bundle().expect("bundle");
+    let functions: Vec<String> = records(&bundle)
+        .into_iter()
+        .map(|record| record.function)
+        .collect();
+    assert_eq!(
+        functions,
+        [
+            "cuInit",
+            "cuDriverGetVersion",
+            "cuDeviceGetCount",
+            "cuDeviceGetName"
+        ]
     );
 }
 
