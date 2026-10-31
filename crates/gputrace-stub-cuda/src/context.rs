@@ -2,7 +2,7 @@ use std::ffi::{c_int, c_uint, c_void};
 
 use crate::log::note;
 use crate::out;
-use crate::state::{as_handle, current_context, set_current_context, state};
+use crate::state::{as_handle, current_context, pop_stack, push_stack, set_current_context, state};
 use crate::types::*;
 
 fn create(device: CUdevice, pctx: *mut CUcontext) -> CUresult {
@@ -102,6 +102,52 @@ pub unsafe extern "C" fn cuCtxSetCurrent(ctx: CUcontext) -> CUresult {
     }
     set_current_context(handle);
     CUDA_SUCCESS
+}
+
+fn push_current(ctx: CUcontext) -> CUresult {
+    let handle = ctx as usize;
+    if !state().contexts.contains_key(&handle) {
+        return CUDA_ERROR_INVALID_CONTEXT;
+    }
+    push_stack(current_context());
+    set_current_context(handle);
+    CUDA_SUCCESS
+}
+
+unsafe fn pop_current(pctx: *mut CUcontext) -> CUresult {
+    let handle = current_context();
+    if handle == 0 {
+        return CUDA_ERROR_INVALID_CONTEXT;
+    }
+    if !unsafe { out(pctx, as_handle(handle)) } {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    set_current_context(pop_stack());
+    CUDA_SUCCESS
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cuCtxPushCurrent(ctx: CUcontext) -> CUresult {
+    note("cuCtxPushCurrent");
+    push_current(ctx)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cuCtxPushCurrent_v2(ctx: CUcontext) -> CUresult {
+    note("cuCtxPushCurrent_v2");
+    push_current(ctx)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cuCtxPopCurrent(pctx: *mut CUcontext) -> CUresult {
+    note("cuCtxPopCurrent");
+    unsafe { pop_current(pctx) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cuCtxPopCurrent_v2(pctx: *mut CUcontext) -> CUresult {
+    note("cuCtxPopCurrent_v2");
+    unsafe { pop_current(pctx) }
 }
 
 #[unsafe(no_mangle)]

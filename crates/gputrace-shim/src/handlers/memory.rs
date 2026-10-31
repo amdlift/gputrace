@@ -1,0 +1,128 @@
+//! Deep handlers for the memory subset: allocation, release, and the
+//! host-to-device copy.
+//!
+//! What a pass-through shim cannot say about these calls is what replay
+//! needs most — which allocation a copy targeted, and what was copied. Each
+//! spelling of a call therefore binds the device pointer to a
+//! [`HandleId`](gputrace_core::HandleId) and, for a copy, stages the source
+//! buffer for the blob store. Every `_vN`/`_ptds` spelling is covered: a
+//! target built against any CUDA version must record the same way.
+
+use std::ffi::{c_uint, c_void};
+
+use gputrace_core::{ArgValue, Argument};
+
+use crate::handlers::handles::{HandleKind, handle_id};
+use crate::recorder;
+use crate::shim::{CUDA_ERROR_NOT_FOUND, CUresult, DriverFn, RecordArg};
+
+const CUDA_SUCCESS: CUresult = 0;
+
+/// `cuMemAlloc`, which hands back a device pointer the trace must be able to
+/// follow. The pointer is recorded as the call's product, not as the host
+/// address it was written through.
+macro_rules! alloc_shims {
+    ($($symbol:ident($pointer:ty, $size:ty);)*) => {$(
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $symbol(dptr: *mut $pointer, bytesize: $size) -> CUresult {
+            static REAL: DriverFn<unsafe extern "C" fn(*mut $pointer, $size) -> CUresult> =
+                DriverFn::new(concat!(stringify!($symbol), "\0").as_bytes());
+
+            let call = recorder::begin(stringify!($symbol));
+            let result = match REAL.get() {
+                Some(real) => unsafe { real(dptr, bytesize) },
+                None => CUDA_ERROR_NOT_FOUND,
+            };
+            let allocated = if result == CUDA_SUCCESS && !dptr.is_null() {
+                u64::from(unsafe { *dptr })
+            } else {
+                0
+            };
+            let deep = call
+                .deep(vec![
+                    Argument::new("dptr", ArgValue::DevicePtr(allocated)),
+                    Argument::new("bytesize", RecordArg::record(&bytesize)),
+                ])
+                .produces(handle_id(HandleKind::DevicePtr, allocated));
+            call.finish_deep(result, deep);
+            result
+        }
+    )*};
+}
+
+macro_rules! free_shims {
+    ($($symbol:ident($pointer:ty);)*) => {$(
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $symbol(dptr: $pointer) -> CUresult {
+            static REAL: DriverFn<unsafe extern "C" fn($pointer) -> CUresult> =
+                DriverFn::new(concat!(stringify!($symbol), "\0").as_bytes());
+
+            let pointer = u64::from(dptr);
+            let call = recorder::begin(stringify!($symbol));
+            let deep = call
+                .deep(vec![Argument::new("dptr", ArgValue::DevicePtr(pointer))])
+                .destroys(handle_id(HandleKind::DevicePtr, pointer));
+            let result = match REAL.get() {
+                Some(real) => unsafe { real(dptr) },
+                None => CUDA_ERROR_NOT_FOUND,
+            };
+            call.finish_deep(result, deep);
+            result
+        }
+    )*};
+}
+
+/// `cuMemcpyHtoD`. The payload is staged before the driver runs: it is what
+/// the caller sent, and the caller is free to overwrite the buffer the
+/// instant the copy returns.
+macro_rules! copy_to_device_shims {
+    ($($symbol:ident($pointer:ty, $size:ty);)*) => {$(
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $symbol(
+            dst_device: $pointer,
+            src_host: *const c_void,
+            byte_count: $size,
+        ) -> CUresult {
+            static REAL: DriverFn<
+                unsafe extern "C" fn($pointer, *const c_void, $size) -> CUresult,
+            > = DriverFn::new(concat!(stringify!($symbol), "\0").as_bytes());
+
+            let destination = u64::from(dst_device);
+            let call = recorder::begin(stringify!($symbol));
+            let deep = unsafe {
+                call.deep(vec![
+                    Argument::new("dstDevice", ArgValue::DevicePtr(destination)),
+                    Argument::new("srcHost", ArgValue::HostPtr(src_host as usize as u64)),
+                    Argument::new("ByteCount", RecordArg::record(&byte_count)),
+                ])
+                .consumes(handle_id(HandleKind::DevicePtr, destination))
+                .payload(HOST_TO_DEVICE, src_host.cast::<u8>(), byte_count as usize)
+            };
+            let result = match REAL.get() {
+                Some(real) => unsafe { real(dst_device, src_host, byte_count) },
+                None => CUDA_ERROR_NOT_FOUND,
+            };
+            call.finish_deep(result, deep);
+            result
+        }
+    )*};
+}
+
+/// What a staged host-to-device buffer is called in a record's payloads.
+pub(crate) const HOST_TO_DEVICE: &str = "host_to_device";
+
+alloc_shims! {
+    cuMemAlloc(c_uint, c_uint);
+    cuMemAlloc_v2(u64, usize);
+}
+
+free_shims! {
+    cuMemFree(c_uint);
+    cuMemFree_v2(u64);
+}
+
+copy_to_device_shims! {
+    cuMemcpyHtoD(c_uint, c_uint);
+    cuMemcpyHtoD_v2(u64, usize);
+    cuMemcpyHtoD_v2_ptds(u64, usize);
+}

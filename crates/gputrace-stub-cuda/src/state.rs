@@ -2,7 +2,7 @@
 //! and device pointers come from fixed, monotonically increasing sequences, so
 //! a single-threaded target sees identical values on every run.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::c_void;
 use std::sync::{LazyLock, Mutex, MutexGuard};
@@ -31,6 +31,8 @@ pub struct State {
 
 thread_local! {
     static CURRENT_CONTEXT: Cell<usize> = const { Cell::new(0) };
+    /// What `cuCtxPopCurrent` restores, per host thread as the driver keeps it.
+    static CONTEXT_STACK: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 }
 
 #[derive(Default)]
@@ -112,6 +114,14 @@ pub fn current_context() -> usize {
 
 pub fn set_current_context(handle: usize) {
     CURRENT_CONTEXT.with(|current| current.set(handle));
+}
+
+pub fn push_stack(handle: usize) {
+    CONTEXT_STACK.with_borrow_mut(|stack| stack.push(handle));
+}
+
+pub fn pop_stack() -> usize {
+    CONTEXT_STACK.with_borrow_mut(|stack| stack.pop().unwrap_or(0))
 }
 
 pub fn as_handle(handle: usize) -> *mut c_void {

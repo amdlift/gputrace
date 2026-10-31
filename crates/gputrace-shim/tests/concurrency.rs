@@ -202,9 +202,14 @@ mod record_path {
 
     /// Everything an intercepted call runs through, from entering a shim to
     /// handing a filled buffer to the writer.
-    const ON_THE_RECORD_PATH: [&str; 10] = [
+    const ON_THE_RECORD_PATH: [&str; 15] = [
         "begin",
         "finish",
+        "finish_deep",
+        "close",
+        "deep",
+        "binds",
+        "payload",
         "next_seq",
         "push",
         "flush",
@@ -255,6 +260,25 @@ mod record_path {
                     "{name} locks on the record path, which serializes the \
                      workload capture exists to observe (ADR-0004):\n{body}"
                 );
+            }
+        }
+    }
+
+    /// What a deep handler captures costs the recording thread a memcpy and
+    /// nothing more. Hashing a payload and writing it to the blob store is
+    /// the writer thread's work: doing it inline would put the target's own
+    /// progress behind a filesystem write.
+    #[test]
+    fn stores_no_payload_inline() {
+        for name in ON_THE_RECORD_PATH {
+            for body in bodies(name) {
+                for stored in ["blobs(", "blake3", "fs::"] {
+                    assert!(
+                        !body.contains(stored),
+                        "{name} reaches the blob store on the record path, which \
+                         puts the captured workload behind a filesystem write:\n{body}"
+                    );
+                }
             }
         }
     }

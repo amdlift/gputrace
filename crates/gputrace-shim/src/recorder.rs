@@ -22,7 +22,8 @@ use std::thread::{self, JoinHandle, Thread};
 use std::time::Duration;
 
 use gputrace_core::{
-    ArgValue, Argument, BundleWriter, CallRecord, CaptureConfig, Fidelity, SegmentWriter, ThreadId,
+    ArgValue, Argument, BundleWriter, CallRecord, CaptureConfig, Fidelity, HandleBinding, HandleId,
+    HandleRole, PayloadRef, SegmentWriter, ThreadId,
 };
 
 /// Names the directory the interposer writes its trace bundle to. Unset or
@@ -67,17 +68,147 @@ impl CallScope {
     /// Close the scope with what the driver returned and the arguments the
     /// caller passed, appending the record to this thread's buffer.
     pub fn finish(self, result: c_int, args: Vec<Argument>) {
+        self.close(result, DeepCall::plain(args));
+    }
+
+    /// Start recording what a deep handler saw beyond the scalar arguments.
+    /// The scope decides here, once, how much of it is wanted, so a handler
+    /// never consults the capture's fidelity itself.
+    pub fn deep(&self, args: Vec<Argument>) -> DeepCall {
+        DeepCall {
+            fidelity: self.stamp.as_ref().map(|_| fidelity()),
+            args,
+            handles: Vec::new(),
+            payloads: Vec::new(),
+        }
+    }
+
+    pub fn finish_deep(self, result: c_int, deep: DeepCall) {
+        self.close(result, deep);
+    }
+
+    fn close(self, result: c_int, deep: DeepCall) {
         let Some(stamp) = self.stamp else {
             return;
         };
+        let DeepCall {
+            args,
+            handles,
+            payloads,
+            ..
+        } = deep;
         with_local(move |local| {
             let mut record =
                 CallRecord::new(stamp.function, stamp.thread_seq, stamp.timestamp_ns, result);
             record.device = local.target_device(stamp.function, &args);
             record.args = args;
-            local.push(record);
+            record.handles = handles;
+            local.push(Pending { record, payloads });
         });
     }
+}
+
+/// A payload a handler copied out of the caller's memory, waiting to be
+/// stored. Hashing it and writing it to the blob store is the writer
+/// thread's work: the recording thread only memcpys, because the caller is
+/// free to overwrite the buffer the moment the driver returns.
+struct StagedPayload {
+    role: &'static str,
+    bytes: Vec<u8>,
+}
+
+/// One buffered call, with whatever the deep handler captured alongside it.
+struct Pending {
+    record: CallRecord,
+    payloads: Vec<StagedPayload>,
+}
+
+/// What a deep handler captured beyond the scalar arguments: which handles
+/// the call produced, used or ended, and which buffers it carried.
+///
+/// Everything below the capture's fidelity is dropped here rather than in
+/// each handler, so asking for a payload that is not wanted costs no copy.
+pub struct DeepCall {
+    fidelity: Option<Fidelity>,
+    args: Vec<Argument>,
+    handles: Vec<HandleBinding>,
+    payloads: Vec<StagedPayload>,
+}
+
+impl DeepCall {
+    fn plain(args: Vec<Argument>) -> Self {
+        Self {
+            fidelity: None,
+            args,
+            handles: Vec::new(),
+            payloads: Vec::new(),
+        }
+    }
+
+    fn wants(&self, least: Fidelity) -> bool {
+        self.fidelity.is_some_and(|have| rank(have) >= rank(least))
+    }
+
+    /// The call created `id`.
+    pub fn produces(self, id: Option<HandleId>) -> Self {
+        self.binds(id, HandleRole::Produced)
+    }
+
+    /// The call used `id` without creating or ending it.
+    pub fn consumes(self, id: Option<HandleId>) -> Self {
+        self.binds(id, HandleRole::Consumed)
+    }
+
+    /// The call ended `id`.
+    pub fn destroys(self, id: Option<HandleId>) -> Self {
+        self.binds(id, HandleRole::Destroyed)
+    }
+
+    fn binds(mut self, id: Option<HandleId>, role: HandleRole) -> Self {
+        if let Some(id) = id.filter(|_| self.wants(Fidelity::Handles)) {
+            self.handles.push(HandleBinding { id, role });
+        }
+        self
+    }
+
+    /// Capture `len` bytes of host memory at `src` as the call's `role`
+    /// payload.
+    ///
+    /// # Safety
+    /// `src` must be readable for `len` bytes for the duration of the call.
+    pub unsafe fn payload(mut self, role: &'static str, src: *const u8, len: usize) -> Self {
+        if len == 0 || src.is_null() || !self.wants(Fidelity::Replayable) {
+            return self;
+        }
+        self.payloads.push(StagedPayload {
+            role,
+            bytes: unsafe { std::slice::from_raw_parts(src, len) }.to_vec(),
+        });
+        self
+    }
+}
+
+/// How much one fidelity records, as an order: each level adds to the one
+/// before it.
+fn rank(fidelity: Fidelity) -> u8 {
+    match fidelity {
+        Fidelity::Metadata => 0,
+        Fidelity::Handles => 1,
+        Fidelity::Replayable => 2,
+        Fidelity::Golden => 3,
+    }
+}
+
+/// Attribute this thread's later calls to `device`. A call that changes
+/// which context is current says nothing about a device in its arguments,
+/// so its handler names the device here instead.
+pub fn bind_device(device: Option<u32>) {
+    let _ = with_local(|local| local.device = device);
+}
+
+/// The device this thread's calls are currently attributed to.
+pub fn bound_device() -> Option<u32> {
+    with_local(|local| local.device).flatten()
 }
 
 /// Finish the bundle: flush every thread's buffer, stop the writer, and
@@ -104,7 +235,7 @@ pub fn shutdown() {
 /// One thread's filled buffer, on its way to that thread's segment.
 struct Chunk {
     thread: ThreadId,
-    records: Vec<CallRecord>,
+    calls: Vec<Pending>,
 }
 
 struct Node {
@@ -174,7 +305,7 @@ impl Queue {
 /// a thread has buffered without waiting for that thread to exit.
 struct Slot {
     thread: ThreadId,
-    buffer: AtomicPtr<Vec<CallRecord>>,
+    buffer: AtomicPtr<Vec<Pending>>,
 }
 
 // The box is the buffer's ownership token, not an extra container: the slot
@@ -190,14 +321,14 @@ impl Slot {
 
     /// Take the buffer, leaving the slot empty. `None` means another party
     /// holds it right now.
-    fn claim(&self) -> Option<Box<Vec<CallRecord>>> {
+    fn claim(&self) -> Option<Box<Vec<Pending>>> {
         // Acquire pairs with the `publish` that last put the buffer back, so
         // the records stored through that pointer are visible here.
         let buffer = self.buffer.swap(ptr::null_mut(), Ordering::Acquire);
         (!buffer.is_null()).then(|| unsafe { Box::from_raw(buffer) })
     }
 
-    fn publish(&self, buffer: Box<Vec<CallRecord>>) {
+    fn publish(&self, buffer: Box<Vec<Pending>>) {
         self.buffer.store(Box::into_raw(buffer), Ordering::Release);
     }
 
@@ -205,7 +336,7 @@ impl Slot {
     /// that cannot wait for that thread to exit. A slot is only ever null
     /// for the few instructions its owner spends appending, so a bounded
     /// yield is enough to catch a thread that is still recording.
-    fn steal(&self) -> Option<Vec<CallRecord>> {
+    fn steal(&self) -> Option<Vec<Pending>> {
         for _ in 0..STEAL_ATTEMPTS {
             if let Some(buffer) = self.claim() {
                 return Some(*buffer);
@@ -255,15 +386,15 @@ impl Capture {
     fn flush_every_thread(&self) {
         let slots = self.slots().clone();
         for slot in slots {
-            let Some(records) = slot.steal() else {
+            let Some(calls) = slot.steal() else {
                 continue;
             };
-            if records.is_empty() {
+            if calls.is_empty() {
                 continue;
             }
             self.queue.push(Chunk {
                 thread: slot.thread,
-                records,
+                calls,
             });
         }
     }
@@ -318,8 +449,16 @@ fn drain_to_bundle(queue: &Queue, bundle: BundleWriter) {
                     Entry::Occupied(entry) => entry.into_mut(),
                     Entry::Vacant(entry) => entry.insert(bundle.open_segment(chunk.thread)?),
                 };
-                for record in &chunk.records {
-                    segment.write(record)?;
+                for mut call in chunk.calls {
+                    for staged in std::mem::take(&mut call.payloads) {
+                        let blob = bundle.blobs().put(&staged.bytes)?;
+                        call.record.payloads.push(PayloadRef {
+                            role: staged.role.to_owned(),
+                            blob,
+                            len: staged.bytes.len() as u64,
+                        });
+                    }
+                    segment.write(&call.record)?;
                 }
             }
             if shutting_down {
@@ -353,13 +492,17 @@ fn capture_config() -> CaptureConfig {
     }
 }
 
+/// How much every shim in this process records, read once. Unset means the
+/// capture is replayable: a bundle is only worth keeping if it holds the
+/// payloads a replay needs.
 fn fidelity() -> Fidelity {
-    match env::var(FIDELITY_ENV).as_deref() {
+    static FIDELITY: OnceLock<Fidelity> = OnceLock::new();
+    *FIDELITY.get_or_init(|| match env::var(FIDELITY_ENV).as_deref() {
+        Ok("metadata") => Fidelity::Metadata,
         Ok("handles") => Fidelity::Handles,
-        Ok("replayable") => Fidelity::Replayable,
         Ok("golden") => Fidelity::Golden,
-        _ => Fidelity::Metadata,
-    }
+        _ => Fidelity::Replayable,
+    })
 }
 
 /// What one call says about the device it targeted. A call that names a
@@ -442,18 +585,18 @@ impl Local {
         seq
     }
 
-    fn push(&mut self, record: CallRecord) {
+    fn push(&mut self, call: Pending) {
         let mut buffer = self
             .slot
             .claim()
             .unwrap_or_else(|| Box::new(Vec::with_capacity(CHUNK_RECORDS)));
-        buffer.push(record);
+        buffer.push(call);
         let full = buffer.len() >= CHUNK_RECORDS;
         let chunk =
             full.then(|| std::mem::replace(&mut *buffer, Vec::with_capacity(CHUNK_RECORDS)));
         self.slot.publish(buffer);
-        if let Some(records) = chunk {
-            self.hand_over(records);
+        if let Some(calls) = chunk {
+            self.hand_over(calls);
         }
     }
 
@@ -461,17 +604,17 @@ impl Local {
         let Some(mut buffer) = self.slot.claim() else {
             return;
         };
-        let records = std::mem::take(&mut *buffer);
+        let calls = std::mem::take(&mut *buffer);
         self.slot.publish(buffer);
-        if !records.is_empty() {
-            self.hand_over(records);
+        if !calls.is_empty() {
+            self.hand_over(calls);
         }
     }
 
-    fn hand_over(&self, records: Vec<CallRecord>) {
+    fn hand_over(&self, calls: Vec<Pending>) {
         self.capture.queue.push(Chunk {
             thread: self.slot.thread,
-            records,
+            calls,
         });
     }
 }

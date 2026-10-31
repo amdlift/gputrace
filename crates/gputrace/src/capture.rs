@@ -70,7 +70,7 @@ impl Capture {
             .env(BUNDLE_DIR_ENV, out)
             .env(
                 FIDELITY_ENV,
-                if self.golden { "golden" } else { "metadata" },
+                if self.golden { "golden" } else { "replayable" },
             );
         if let Some(device) = &self.device {
             command.env(VISIBLE_DEVICES_ENV, device);
@@ -159,6 +159,16 @@ mod tests {
         let preload = env_of(&command_of(&capture()), PRELOAD_ENV).expect("preload");
         let preload = preload.to_string_lossy();
         assert_eq!(preload.split(':').next(), Some(FAKE_INTERPOSER));
+    }
+
+    /// The spec's default: a bundle is only worth keeping if it holds the
+    /// payloads a replay needs.
+    #[test]
+    fn capture_records_a_replayable_bundle_unless_told_otherwise() {
+        assert_eq!(
+            env_of(&command_of(&capture()), FIDELITY_ENV).as_deref(),
+            Some(OsStr::new("replayable"))
+        );
     }
 
     #[test]
