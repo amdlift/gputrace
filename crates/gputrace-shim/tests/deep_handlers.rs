@@ -327,3 +327,36 @@ fn a_context_is_one_handle_from_the_call_that_made_it_to_the_one_that_ends_it() 
     assert_eq!(of("cuCtxSetCurrent", HandleRole::Consumed, 1), second);
     assert_eq!(of("cuCtxDestroy_v2", HandleRole::Destroyed, 1), second);
 }
+
+/// CUDA ships every call under several spellings and a target binds whichever
+/// its headers chose. A deep handler that covered only the current one would
+/// leave an older or stream-ordered build recording nothing a replay can use.
+#[test]
+fn an_older_spelling_of_a_call_records_exactly_as_the_current_one_does() {
+    let run = run("legacy_spellings");
+    let pointer = reported_pointer(&run);
+    let bundle = run.bundle().expect("bundle");
+    let records = records(&bundle);
+
+    let allocation = bound(&record(&records, "cuMemAlloc"), HandleRole::Produced);
+    assert_eq!(
+        bound(&record(&records, "cuMemFree"), HandleRole::Destroyed),
+        allocation
+    );
+
+    for copy in ["cuMemcpyHtoD", "cuMemcpyHtoD_v2_ptds"] {
+        let copy = record(&records, copy);
+        assert_eq!(arg(&copy, "dstDevice"), ArgValue::DevicePtr(pointer));
+        assert_eq!(bound(&copy, HandleRole::Consumed), allocation);
+        let (blob, len) = payload(&copy, "host_to_device");
+        assert_eq!(len, 16);
+        assert_eq!(bundle.read_blob(&blob).expect("blob"), [0x5au8; 16]);
+    }
+
+    let context = bound(&record(&records, "cuCtxCreate_v2"), HandleRole::Produced);
+    assert_eq!(
+        bound(&record(&records, "cuCtxDestroy"), HandleRole::Destroyed),
+        context
+    );
+    assert_ne!(context, allocation);
+}
