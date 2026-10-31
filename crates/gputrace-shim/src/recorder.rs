@@ -34,6 +34,9 @@ pub const BUNDLE_DIR_ENV: &str = "GPUTRACE_OUT";
 /// Names how much each shim records: `metadata`, `handles`, `replayable`
 /// or `golden`.
 pub const FIDELITY_ENV: &str = "GPUTRACE_FIDELITY";
+/// How CUDA confines a process to a subset of the GPUs. `gputrace capture
+/// --device` sets it, and the manifest records what it named.
+pub const VISIBLE_DEVICES_ENV: &str = "CUDA_VISIBLE_DEVICES";
 
 const CHUNK_RECORDS: usize = 256;
 const WRITER_IDLE_POLL: Duration = Duration::from_millis(2);
@@ -553,11 +556,24 @@ fn capture_config() -> CaptureConfig {
     CaptureConfig {
         backend: "cuda".to_owned(),
         fidelity: fidelity(),
-        device: None,
+        device: selected_device(),
         command: env::args_os()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect(),
     }
+}
+
+/// The GPU this capture was pointed at, as the launcher numbered it. CUDA
+/// renumbers a confined process's devices from zero, so this is not the
+/// ordinal the records carry — it is the one `--device` named.
+fn selected_device() -> Option<u32> {
+    env::var(VISIBLE_DEVICES_ENV)
+        .ok()?
+        .split(',')
+        .next()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// How much every shim in this process records, read once. Unset means the

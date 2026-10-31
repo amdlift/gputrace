@@ -49,3 +49,48 @@ fn the_targets_output_and_exit_status_pass_through_the_wrapper() {
     assert_eq!(String::from_utf8_lossy(&run.stdout), "out:driver=13040\n");
     assert_eq!(String::from_utf8_lossy(&run.stderr), "err:ready\n");
 }
+
+/// Capturing against the GPU that drives the display can freeze the desktop,
+/// so `--device` has to actually confine the target: the chosen GPU must be
+/// the only one it can reach, not merely the one it is encouraged to prefer.
+#[test]
+fn the_chosen_device_is_the_only_gpu_the_target_can_see() {
+    let out = TempDir::new().expect("tempdir");
+    interposer().expect("interposer is built");
+    let run = Command::new(env!("CARGO_BIN_EXE_gputrace"))
+        .args(["capture", "--device", "1", "--out"])
+        .arg(out.path().join("trace"))
+        .arg("--")
+        .arg(target_bin("stub_smoke"))
+        .env("GPUTRACE_LIBCUDA", stub_libcuda().expect("stub driver"))
+        .env("GPUTRACE_STUB_DEVICES", "2")
+        .output()
+        .expect("run gputrace capture");
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "driver=13040\ndevices=1\nname=gputrace-stub-device-1\n"
+    );
+
+    let bundle = TraceBundle::open(out.path().join("trace")).expect("bundle");
+    assert_eq!(
+        bundle.manifest().capture.device,
+        Some(1),
+        "the manifest records which GPU the capture was pointed at"
+    );
+    assert_eq!(
+        bundle
+            .manifest()
+            .environment
+            .devices
+            .iter()
+            .map(|device| device.ordinal)
+            .collect::<Vec<_>>(),
+        [0],
+        "a confined target renumbers its one GPU to zero, and records say so"
+    );
+}
