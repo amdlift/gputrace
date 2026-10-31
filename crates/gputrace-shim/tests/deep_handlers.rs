@@ -583,3 +583,69 @@ fn a_kernel_lookup_names_its_module_and_the_name_it_asked_for() {
         module
     );
 }
+
+/// What `launch_params` packs into its `extra` buffer.
+const PACKED: [u8; 12] = [7, 0, 0, 0, 0, 0, 0xc0, 0x3f, 0xef, 0xbe, 0xad, 0xde];
+
+#[test]
+fn a_launch_records_its_configuration_and_the_kernel_it_ran() {
+    let run = run("launch_params");
+    let bundle = run.bundle().expect("bundle");
+    let records = records(&bundle);
+
+    let kernel = bound(
+        &record(&records, "cuModuleGetFunction"),
+        HandleRole::Produced,
+    );
+    let stream = handle_arg(&record(&records, "cuStreamCreate"), "hStream");
+
+    let launch = nth(&records, "cuLaunchKernel", 0);
+    assert_eq!(handle_arg(&launch, "f"), kernel);
+    assert_eq!(handle_arg(&launch, "hStream"), stream);
+    assert_eq!(
+        bound_all(&launch, HandleRole::Consumed),
+        HashSet::from([kernel, stream])
+    );
+    for (name, value) in [
+        ("gridDimX", 4),
+        ("gridDimY", 2),
+        ("gridDimZ", 1),
+        ("blockDimX", 64),
+        ("blockDimY", 8),
+        ("blockDimZ", 1),
+        ("sharedMemBytes", 256),
+    ] {
+        assert_eq!(arg(&launch, name), ArgValue::Unsigned(value), "{name}");
+    }
+}
+
+/// The `extra` packing states the size of the argument buffer, so the whole
+/// buffer is recoverable byte for byte.
+#[test]
+fn a_launch_packed_through_extra_carries_its_parameter_buffer() {
+    let run = run("launch_params");
+    let bundle = run.bundle().expect("bundle");
+
+    let launch = nth(&records(&bundle), "cuLaunchKernel", 0);
+    let (blob, len) = payload(&launch, "kernel_params");
+    assert_eq!(len, PACKED.len() as u64);
+    assert_eq!(bundle.read_blob(&blob).expect("blob"), PACKED);
+}
+
+/// `kernelParams` is a bare `void**`: no count, no element sizes, nothing
+/// at the ABI level that says how far it is safe to read. Capture records
+/// that the launch used it and refuses to invent a size.
+#[test]
+fn a_launch_through_the_bare_pointer_array_records_it_without_a_payload() {
+    let run = run("launch_params");
+    let array = reported(&run, "kernel_params");
+    let bundle = run.bundle().expect("bundle");
+
+    let launch = nth(&records(&bundle), "cuLaunchKernel", 1);
+    assert_eq!(arg(&launch, "kernelParams"), ArgValue::HostPtr(array));
+    assert_eq!(arg(&launch, "extra"), ArgValue::HostPtr(0));
+    assert!(
+        launch.payloads.is_empty(),
+        "no size is recoverable, so nothing is stored"
+    );
+}

@@ -40,6 +40,9 @@ macro_rules! pass_through {
     (fn cuMemcpyHtoDAsync $($rest:tt)*) => {};
     (fn cuMemcpyHtoDAsync_v2 $($rest:tt)*) => {};
     (fn cuMemcpyHtoDAsync_v2_ptsz $($rest:tt)*) => {};
+    // ── Hand-written: `handlers/launch.rs` ──
+    (fn cuLaunchKernel $($rest:tt)*) => {};
+    (fn cuLaunchKernel_ptsz $($rest:tt)*) => {};
     // ── Hand-written: `handlers/module.rs` ──
     (fn cuModuleLoadData $($rest:tt)*) => {};
     (fn cuModuleLoadDataEx $($rest:tt)*) => {};
