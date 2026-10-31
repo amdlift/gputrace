@@ -96,3 +96,46 @@ fn the_stub_binds_kernels_to_the_module_that_defines_them() {
         ]
     );
 }
+
+#[test]
+fn the_stub_orders_events_across_streams() {
+    let harness = Harness::new().expect("harness");
+    let run = harness
+        .run(target_bin("stream_event"), &[])
+        .expect("run target");
+
+    assert!(run.status().success(), "target failed: {}", run.stderr());
+    assert_eq!(
+        run.stdout(),
+        concat!(
+            "producer=0x10100\n",
+            "consumer=0x10200\n",
+            "start=0x10300\n",
+            "finish=0x10400\n",
+            "elapsed=1\n",
+            "record_on_destroyed=400\n",
+        )
+    );
+    assert_eq!(
+        run.stub_calls(),
+        [
+            "cuInit",
+            "cuDeviceGet",
+            "cuCtxCreate_v4",
+            "cuStreamCreate",
+            "cuStreamCreate",
+            "cuEventCreate",
+            "cuEventCreate",
+            "cuEventRecord",
+            "cuStreamWaitEvent",
+            "cuEventRecord",
+            "cuStreamSynchronize",
+            "cuStreamSynchronize",
+            "cuEventSynchronize",
+            "cuEventElapsedTime_v2",
+            "cuEventDestroy_v2",
+            "cuStreamDestroy_v2",
+            "cuEventRecord",
+        ]
+    );
+}

@@ -11,12 +11,14 @@
 
 mod context;
 mod device;
+mod event;
 mod init;
 mod launch;
 mod log;
 mod memory;
 mod module;
 mod state;
+mod stream;
 mod types;
 
 pub use types::*;

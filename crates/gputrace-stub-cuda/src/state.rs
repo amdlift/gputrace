@@ -20,8 +20,11 @@ pub struct State {
     pub allocations: BTreeMap<CUdeviceptr, Vec<u8>>,
     pub modules: HashMap<usize, Module>,
     pub functions: HashMap<usize, usize>,
+    pub streams: HashSet<usize>,
+    pub events: HashMap<usize, Option<u64>>,
     next_handle: usize,
     next_device_ptr: CUdeviceptr,
+    next_record: u64,
 }
 
 thread_local! {
@@ -53,6 +56,13 @@ impl State {
         handle
     }
 
+    /// A monotonic stamp per `cuEventRecord`. It stands in for the GPU clock
+    /// so elapsed time between two recorded events is deterministic.
+    pub fn next_record(&mut self) -> u64 {
+        self.next_record += 1;
+        self.next_record
+    }
+
     pub fn allocate(&mut self, bytes: usize) -> CUdeviceptr {
         let base = self.next_device_ptr;
         let span = (bytes.max(1) as CUdeviceptr).next_multiple_of(DEVICE_PTR_ALIGNMENT);
@@ -78,8 +88,11 @@ impl Default for State {
             allocations: BTreeMap::new(),
             modules: HashMap::new(),
             functions: HashMap::new(),
+            streams: HashSet::new(),
+            events: HashMap::new(),
             next_handle: FIRST_HANDLE,
             next_device_ptr: FIRST_DEVICE_PTR,
+            next_record: 0,
         }
     }
 }
