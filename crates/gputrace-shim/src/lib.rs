@@ -5,10 +5,14 @@
 //!
 //! Full-surface trampolines are generated from the driver headers at dev
 //! time and vendored (see ADR-0005); hand-written deep handlers cover the
-//! curated subset. This file is the scaffold entry point only.
+//! curated subset. Both are written against the one pattern in [`shim`].
 
+mod handlers;
 pub mod real;
+pub mod recorder;
+pub mod shim;
 
 pub use real::{
     DEFAULT_LIBCUDA, LIBCUDA_OVERRIDE_ENV, real_library, real_library_path, real_symbol,
 };
+pub use recorder::{BUNDLE_DIR_ENV, FIDELITY_ENV};
