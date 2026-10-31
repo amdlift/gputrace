@@ -1,0 +1,18 @@
+# Dev-only: its own workspace, so `cargo build`/`cargo test` at the repo root
+# never resolve `bindgen`. ADR-0005 keeps downstream builds header-free, and a
+# workspace member — even an unused one — would put bindgen in the root lockfile.
+[workspace]
+
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+bindgen = "0.72"
+prettyplease = "0.2"
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "parsing", "printing", "extra-traits"] }
