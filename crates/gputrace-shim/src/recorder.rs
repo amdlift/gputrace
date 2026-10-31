@@ -96,6 +96,8 @@ impl CallScope {
         let Some(stamp) = self.stamp else {
             return;
         };
+        // After the forward, never before it: see `register_exit_hook`.
+        register_exit_hook();
         let DeepCall {
             args,
             handles,
@@ -469,7 +471,6 @@ fn start() -> Option<Capture> {
             .ok()?
     };
     let _ = queue.writer.set(handle.thread().clone());
-    register_exit_hook();
 
     Some(Capture {
         queue,
@@ -752,12 +753,27 @@ extern "C" fn flush_at_exit() {
     shutdown();
 }
 
+/// Arrange for the bundle to be finished on the way out, once the backing
+/// driver is loaded.
+///
+/// The target process is what dies, so the bundle has to be finished from
+/// inside it. `_exit`, `abort` and a fatal signal all bypass `atexit`: those
+/// runs lose the bundle by construction, which is why shutdown must never be
+/// the only thing standing between the target and its own exit.
+///
+/// Registering only once the real driver has answered a call is what lets the
+/// manifest describe a real GPU at all. The driver registers its own teardown
+/// from inside `cuInit`, and glibc runs exit handlers newest first, so a hook
+/// registered any earlier runs *after* the driver has deinitialized itself
+/// and every question the manifest asks answers `CUDA_ERROR_DEINITIALIZED`.
 fn register_exit_hook() {
-    // The target process is what dies, so the bundle has to be finished from
-    // inside it. `_exit`, `abort` and a fatal signal all bypass `atexit`:
-    // those runs lose the bundle by construction, which is why shutdown must
-    // never be the only thing standing between the target and its own exit.
-    unsafe { atexit(flush_at_exit) };
+    static REGISTERED: OnceLock<()> = OnceLock::new();
+    if capture().is_none() {
+        return;
+    }
+    REGISTERED.get_or_init(|| {
+        unsafe { atexit(flush_at_exit) };
+    });
 }
 
 #[repr(C)]

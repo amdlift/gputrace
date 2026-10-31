@@ -23,6 +23,7 @@ pub struct Harness {
     workdir: Arc<TempDir>,
     runs: AtomicUsize,
     extra_env: Vec<(OsString, OsString)>,
+    backing: Option<PathBuf>,
 }
 
 impl Harness {
@@ -31,6 +32,7 @@ impl Harness {
             workdir: Arc::new(TempDir::new()?),
             runs: AtomicUsize::new(0),
             extra_env: Vec::new(),
+            backing: None,
         })
     }
 
@@ -38,6 +40,14 @@ impl Harness {
     pub fn with_env(mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
         self.extra_env
             .push((key.as_ref().to_owned(), value.as_ref().to_owned()));
+        self
+    }
+
+    /// Forward to a real `libcuda` instead of the stub. The stub is then
+    /// left out of `LD_PRELOAD` altogether, so nothing of it can answer a
+    /// call the interposer passes on.
+    pub fn against(mut self, libcuda: impl Into<PathBuf>) -> Self {
+        self.backing = Some(libcuda.into());
         self
     }
 
@@ -56,13 +66,16 @@ impl Harness {
         // preloaded behind it because a fixture target links no libcuda at all:
         // its undefined `cu*` have to bind to something in the global scope.
         let mut preload = interposer.as_os_str().to_owned();
-        preload.push(":");
-        preload.push(stub.as_os_str());
+        if self.backing.is_none() {
+            preload.push(":");
+            preload.push(stub.as_os_str());
+        }
+        let backing = self.backing.as_deref().unwrap_or(stub);
 
         let output = Command::new(target.as_ref())
             .args(args)
             .env("LD_PRELOAD", preload)
-            .env(LIBCUDA_ENV, stub)
+            .env(LIBCUDA_ENV, backing)
             .env(BUNDLE_ENV, &bundle)
             .env(STUB_LOG_ENV, &stub_log)
             .envs(self.extra_env.iter().map(|(k, v)| (k, v)))
