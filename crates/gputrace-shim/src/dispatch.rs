@@ -13,11 +13,34 @@ use std::sync::OnceLock;
 
 use gputrace_core::{ArgValue, Argument};
 
-use crate::recorder;
+use crate::recorder::{self, CallScope};
 use crate::shim::{CUDA_ERROR_NOT_FOUND, CUresult, DriverFn};
 
 const CUDA_SUCCESS: CUresult = 0;
 const CU_GET_PROC_ADDRESS_SYMBOL_NOT_FOUND: c_int = 1;
+
+/// The CUDA 11.3 arity, which the driver still exports: a caller from that
+/// era pushes four arguments, so the five-argument body would read one that
+/// was never passed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cuGetProcAddress(
+    symbol: *const c_char,
+    pfn: *mut *mut c_void,
+    cuda_version: c_int,
+    flags: u64,
+) -> CUresult {
+    static REAL: DriverFn<
+        unsafe extern "C" fn(*const c_char, *mut *mut c_void, c_int, u64) -> CUresult,
+    > = DriverFn::new(b"cuGetProcAddress\0");
+
+    let call = recorder::begin("cuGetProcAddress");
+    let args = lookup_args(symbol, cuda_version, flags);
+    let result = match REAL.get() {
+        Some(real) => unsafe { real(symbol, pfn, cuda_version, flags) },
+        None => unsafe { no_such_driver_entry_point(pfn, ptr::null_mut()) },
+    };
+    unsafe { answer(call, pfn, result, args) }
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn cuGetProcAddress_v2(
@@ -37,6 +60,17 @@ pub unsafe extern "C" fn cuGetProcAddress_v2(
         Some(real) => unsafe { real(symbol, pfn, cuda_version, flags, symbol_status) },
         None => unsafe { no_such_driver_entry_point(pfn, symbol_status) },
     };
+    unsafe { answer(call, pfn, result, args) }
+}
+
+/// Close the recorded call, handing the caller the interposer's own
+/// trampoline in place of the driver's answer where there is one.
+unsafe fn answer(
+    call: CallScope,
+    pfn: *mut *mut c_void,
+    result: CUresult,
+    args: Vec<Argument>,
+) -> CUresult {
     if result == CUDA_SUCCESS {
         unsafe { redirect(pfn) };
     }

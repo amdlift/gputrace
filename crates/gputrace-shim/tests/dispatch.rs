@@ -12,6 +12,14 @@ fn run(fixture: &str) -> CaptureRun {
     run
 }
 
+/// One `key=value` line of what the fixture observed.
+fn observed<'a>(run: &'a CaptureRun, key: &str) -> &'a str {
+    run.stdout()
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{key}=")))
+        .unwrap_or_else(|| panic!("no {key} in: {}", run.stdout()))
+}
+
 fn records(bundle: &TraceBundle) -> Vec<CallRecord> {
     bundle
         .threads()
@@ -24,10 +32,13 @@ fn records(bundle: &TraceBundle) -> Vec<CallRecord> {
 fn a_call_resolved_through_the_dispatch_table_is_recorded() {
     let run = run("dispatch_table");
 
+    assert_eq!(observed(&run, "lookup"), "0");
+    assert_eq!(observed(&run, "status"), "0");
+    assert_eq!(observed(&run, "call"), "0");
     assert_eq!(
-        run.stdout(),
-        "lookup=0 status=0\ncall=0\nversion=13040\n",
-        "the target must see the driver's own answers"
+        observed(&run, "version"),
+        "13040",
+        "the target must see the driver's own answer"
     );
 
     let bundle = run.bundle().expect("bundle");
@@ -36,4 +47,16 @@ fn a_call_resolved_through_the_dispatch_table_is_recorded() {
         .find(|record| record.function == "cuDriverGetVersion")
         .expect("a cuDriverGetVersion record");
     assert_eq!(record.result, 0);
+}
+
+#[test]
+fn the_cuda_11_arity_answers_with_the_same_trampoline() {
+    let run = run("dispatch_table");
+
+    assert_eq!(observed(&run, "v1"), "0");
+    assert_eq!(
+        observed(&run, "v1_agrees"),
+        "true",
+        "both arities the driver exports must be shimmed"
+    );
 }
