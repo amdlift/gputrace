@@ -23,6 +23,15 @@ fn run(fixture: &str) -> CaptureRun {
     run
 }
 
+fn run_at(fixture: &str, fidelity: &str) -> CaptureRun {
+    let harness = Harness::new()
+        .expect("harness")
+        .with_env("GPUTRACE_FIDELITY", fidelity);
+    let run = harness.run(target_bin(fixture), &[]).expect("run target");
+    assert!(run.status().success(), "target failed: {}", run.stderr());
+    run
+}
+
 fn record(records: &[CallRecord], function: &str) -> CallRecord {
     records
         .iter()
@@ -107,6 +116,53 @@ fn a_host_to_device_copy_carries_its_payload_into_the_blob_store() {
     let (blob, len) = payload(&copy, "host_to_device");
     assert_eq!(len, SENT.len() as u64);
     assert_eq!(bundle.read_blob(&blob).expect("blob"), SENT);
+}
+
+/// What `alloc_copy` prints: the bytes it read back off the device. Asserting
+/// the stored output against what the target itself saw is what makes the
+/// golden value a reference and not a restatement of the capture.
+fn reported_output(run: &CaptureRun) -> Vec<u8> {
+    let line = run
+        .stdout()
+        .lines()
+        .find_map(|line| line.strip_prefix("received="))
+        .expect("the fixture reports what it read back");
+    line.as_bytes()
+        .chunks(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).expect("hex"), 16).expect("hex"))
+        .collect()
+}
+
+/// A device-to-host copy is the only thing in a trace that says what the GPU
+/// answered. It is captured as a golden value for a later replay to diff
+/// against, and only when the capture asked for one.
+#[test]
+fn a_golden_capture_stores_what_the_device_sent_back() {
+    let run = run_at("alloc_copy", "golden");
+    let bundle = run.bundle().expect("bundle");
+    assert_eq!(bundle.manifest().capture.fidelity, Fidelity::Golden);
+
+    let copy = record(&records(&bundle), "cuMemcpyDtoH_v2");
+    let (blob, len) = payload(&copy, "golden_output");
+    let read_back = reported_output(&run);
+    assert_eq!(len, read_back.len() as u64);
+    assert_eq!(bundle.read_blob(&blob).expect("blob"), read_back);
+}
+
+#[test]
+fn a_replayable_capture_follows_a_read_back_without_storing_its_output() {
+    let run = run("alloc_copy");
+    let pointer = reported_pointer(&run);
+    let bundle = run.bundle().expect("bundle");
+    let records = records(&bundle);
+
+    let copy = record(&records, "cuMemcpyDtoH_v2");
+    assert_eq!(arg(&copy, "srcDevice"), ArgValue::DevicePtr(pointer));
+    assert_eq!(
+        bound(&copy, HandleRole::Consumed),
+        bound(&record(&records, "cuMemAlloc_v2"), HandleRole::Produced)
+    );
+    assert!(copy.payloads.is_empty(), "{:?}", copy.payloads);
 }
 
 /// Fidelity is what a deep handler costs: identity is cheap, a payload is a
@@ -360,6 +416,24 @@ fn an_older_spelling_of_a_call_records_exactly_as_the_current_one_does() {
         context
     );
     assert_ne!(context, allocation);
+}
+
+#[test]
+fn every_spelling_of_a_read_back_yields_the_same_golden_value() {
+    let run = run_at("legacy_spellings", "golden");
+    let pointer = reported_pointer(&run);
+    let bundle = run.bundle().expect("bundle");
+    let records = records(&bundle);
+    let allocation = bound(&record(&records, "cuMemAlloc"), HandleRole::Produced);
+
+    for read_back in ["cuMemcpyDtoH", "cuMemcpyDtoH_v2_ptds"] {
+        let read_back = record(&records, read_back);
+        assert_eq!(arg(&read_back, "srcDevice"), ArgValue::DevicePtr(pointer));
+        assert_eq!(bound(&read_back, HandleRole::Consumed), allocation);
+        let (blob, len) = payload(&read_back, "golden_output");
+        assert_eq!(len, 16);
+        assert_eq!(bundle.read_blob(&blob).expect("blob"), [0x5au8; 16]);
+    }
 }
 
 /// What a stream/event fixture prints: the raw handle behind a label.

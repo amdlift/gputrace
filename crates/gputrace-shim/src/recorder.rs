@@ -172,12 +172,35 @@ impl DeepCall {
     }
 
     /// Capture `len` bytes of host memory at `src` as the call's `role`
-    /// payload.
+    /// payload: what the caller handed the driver, which a replay has to
+    /// hand it again.
     ///
     /// # Safety
     /// `src` must be readable for `len` bytes for the duration of the call.
-    pub unsafe fn payload(mut self, role: &'static str, src: *const u8, len: usize) -> Self {
-        if len == 0 || src.is_null() || !self.wants(Fidelity::Replayable) {
+    pub unsafe fn payload(self, role: &'static str, src: *const u8, len: usize) -> Self {
+        unsafe { self.stage(Fidelity::Replayable, role, src, len) }
+    }
+
+    /// Capture `len` bytes of host memory at `src` as a golden value: what
+    /// the driver answered, kept so a later replay can be diffed against it.
+    /// Only a golden capture pays for it.
+    ///
+    /// # Safety
+    /// `src` must be readable for `len` bytes for the duration of the call.
+    pub unsafe fn output(self, role: &'static str, src: *const u8, len: usize) -> Self {
+        unsafe { self.stage(Fidelity::Golden, role, src, len) }
+    }
+
+    /// # Safety
+    /// `src` must be readable for `len` bytes for the duration of the call.
+    unsafe fn stage(
+        mut self,
+        least: Fidelity,
+        role: &'static str,
+        src: *const u8,
+        len: usize,
+    ) -> Self {
+        if len == 0 || src.is_null() || !self.wants(least) {
             return self;
         }
         self.payloads.push(StagedPayload {
