@@ -5,17 +5,13 @@ use crate::out;
 use crate::state::state;
 use crate::types::*;
 
-fn known_device(dev: CUdevice) -> bool {
-    (0..STUB_DEVICE_COUNT).contains(&dev)
-}
-
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn cuDeviceGetCount(count: *mut c_int) -> CUresult {
     note("cuDeviceGetCount");
     if !state().initialized {
         return CUDA_ERROR_NOT_INITIALIZED;
     }
-    if unsafe { out(count, STUB_DEVICE_COUNT) } {
+    if unsafe { out(count, device_count()) } {
         CUDA_SUCCESS
     } else {
         CUDA_ERROR_INVALID_VALUE
@@ -28,7 +24,7 @@ pub unsafe extern "C" fn cuDeviceGet(device: *mut CUdevice, ordinal: c_int) -> C
     if !state().initialized {
         return CUDA_ERROR_NOT_INITIALIZED;
     }
-    if !known_device(ordinal) {
+    if !device_exists(ordinal) {
         return CUDA_ERROR_INVALID_DEVICE;
     }
     if unsafe { out(device, ordinal) } {
@@ -44,13 +40,14 @@ pub unsafe extern "C" fn cuDeviceGetName(name: *mut c_char, len: c_int, dev: CUd
     if !state().initialized {
         return CUDA_ERROR_NOT_INITIALIZED;
     }
-    if !known_device(dev) {
+    if !device_exists(dev) {
         return CUDA_ERROR_INVALID_DEVICE;
     }
     if name.is_null() || len <= 0 {
         return CUDA_ERROR_INVALID_VALUE;
     }
-    let bytes = STUB_DEVICE_NAME.as_bytes();
+    let name_of_device = device_name(dev);
+    let bytes = name_of_device.as_bytes();
     let copied = bytes.len().min(len as usize - 1);
     unsafe {
         std::ptr::copy_nonoverlapping(bytes.as_ptr().cast::<c_char>(), name, copied);
@@ -69,7 +66,7 @@ pub unsafe extern "C" fn cuDeviceGetAttribute(
     if !state().initialized {
         return CUDA_ERROR_NOT_INITIALIZED;
     }
-    if !known_device(dev) {
+    if !device_exists(dev) {
         return CUDA_ERROR_INVALID_DEVICE;
     }
     let value = match attrib {
@@ -97,7 +94,7 @@ pub unsafe extern "C" fn cuDeviceComputeCapability(
     if !state().initialized {
         return CUDA_ERROR_NOT_INITIALIZED;
     }
-    if !known_device(dev) {
+    if !device_exists(dev) {
         return CUDA_ERROR_INVALID_DEVICE;
     }
     if unsafe { out(major, STUB_COMPUTE_CAPABILITY.0) && out(minor, STUB_COMPUTE_CAPABILITY.1) } {
@@ -113,7 +110,7 @@ pub unsafe extern "C" fn cuDeviceTotalMem_v2(bytes: *mut usize, dev: CUdevice) -
     if !state().initialized {
         return CUDA_ERROR_NOT_INITIALIZED;
     }
-    if !known_device(dev) {
+    if !device_exists(dev) {
         return CUDA_ERROR_INVALID_DEVICE;
     }
     if unsafe { out(bytes, STUB_DEVICE_TOTAL_MEM) } {
@@ -130,7 +127,7 @@ pub unsafe extern "C" fn cuDeviceTotalMem(bytes: *mut c_uint, dev: CUdevice) -> 
     if !state().initialized {
         return CUDA_ERROR_NOT_INITIALIZED;
     }
-    if !known_device(dev) {
+    if !device_exists(dev) {
         return CUDA_ERROR_INVALID_DEVICE;
     }
     let total = c_uint::try_from(STUB_DEVICE_TOTAL_MEM).unwrap_or(c_uint::MAX);

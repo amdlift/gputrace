@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::c_void;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
-use crate::types::CUdeviceptr;
+use crate::types::{CUdevice, CUdeviceptr};
 
 const FIRST_HANDLE: usize = 0x0001_0000;
 const HANDLE_STRIDE: usize = 0x100;
@@ -16,7 +16,9 @@ const DEVICE_PTR_ALIGNMENT: CUdeviceptr = 0x1000;
 
 pub struct State {
     pub initialized: bool,
-    pub contexts: HashSet<usize>,
+    /// Every live context and the device it was created on, so the stub can
+    /// answer `cuCtxGetDevice` for a process using more than one GPU.
+    pub contexts: HashMap<usize, CUdevice>,
     pub allocations: BTreeMap<CUdeviceptr, Vec<u8>>,
     pub modules: HashMap<usize, Module>,
     pub functions: HashMap<usize, usize>,
@@ -84,7 +86,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             initialized: false,
-            contexts: HashSet::new(),
+            contexts: HashMap::new(),
             allocations: BTreeMap::new(),
             modules: HashMap::new(),
             functions: HashMap::new(),
