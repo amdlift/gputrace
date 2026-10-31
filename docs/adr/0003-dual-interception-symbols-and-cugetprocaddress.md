@@ -1,0 +1,3 @@
+# Dual interception: export symbols AND hook cuGetProcAddress
+
+The naive interposer exports the `cu*` symbols from our `dylib` and relies on `LD_PRELOAD` to shadow them. That silently misses calls on modern CUDA (11.3+), where the Runtime and newer applications resolve driver entry points through the `cuGetProcAddress(name, &pfn, version, flags)` dispatch table rather than linking the classic symbols. We therefore do **both**: export the `cu*` symbols *and* intercept `cuGetProcAddress` to hand back our own trampolines. A future reader seeing the `cuGetProcAddress` hook will wonder why it is needed alongside the exported symbols — it exists so no call path (direct link or dispatch table) escapes capture.
