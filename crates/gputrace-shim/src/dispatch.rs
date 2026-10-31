@@ -79,9 +79,11 @@ unsafe fn answer(
 }
 
 fn lookup_args(symbol: *const c_char, cuda_version: c_int, flags: u64) -> Vec<Argument> {
-    let name = match symbol_name(symbol) {
-        Some(name) => ArgValue::Str(name.to_string_lossy().into_owned()),
-        None => ArgValue::Null,
+    let name = if symbol.is_null() {
+        ArgValue::Null
+    } else {
+        let symbol = unsafe { CStr::from_ptr(symbol) };
+        ArgValue::Str(symbol.to_string_lossy().into_owned())
     };
     vec![
         Argument::new("symbol", name),
@@ -124,7 +126,8 @@ unsafe fn redirect(pfn: *mut *mut c_void) {
 
 /// The name the driver's answer is exported under. Asking the dynamic linker
 /// rather than re-deriving the `_vN` / `_ptsz` spelling the driver chose
-/// keeps the hook free of any knowledge of that mangling.
+/// keeps the hook free of any knowledge of that mangling. The name lives in
+/// the string table of a library the interposer never unloads.
 fn resolved_entry_point_name(address: *mut c_void) -> Option<&'static CStr> {
     let info = describe(address)?;
     if info.symbol_address != address || info.symbol_name.is_null() {
@@ -156,10 +159,6 @@ fn interposer_base() -> Option<*mut c_void> {
         describe(interposer_base as *const () as *mut c_void).map(|info| info.base as usize)
     });
     base.map(|base| base as *mut c_void)
-}
-
-fn symbol_name(symbol: *const c_char) -> Option<&'static CStr> {
-    (!symbol.is_null()).then(|| unsafe { CStr::from_ptr(symbol) })
 }
 
 #[repr(C)]
