@@ -2,7 +2,7 @@
 //! hand-written shim is still recorded, and a hand-written shim keeps the
 //! symbol to itself.
 
-use gputrace_core::{ArgValue, CallRecord, TraceBundle};
+use gputrace_core::{ArgValue, Argument, CallRecord, TraceBundle};
 use gputrace_testkit::{Harness, target_bin};
 
 fn records(bundle: &TraceBundle) -> Vec<CallRecord> {
@@ -45,4 +45,25 @@ fn an_entry_point_with_no_hand_written_shim_is_still_recorded() {
     );
     assert_eq!(get_name.args[1].value, ArgValue::Signed(64));
     assert_eq!(get_name.args[2].value, ArgValue::Signed(0));
+}
+
+#[test]
+fn a_hand_written_shim_keeps_the_symbol_to_itself() {
+    let records = capture("stub_smoke");
+
+    // The two spellings are what tells them apart: the hand-written shim in
+    // `handlers/init.rs` names the argument as the shim author did, the
+    // generated one as the header does (`Flags`).
+    assert_eq!(
+        record(&records, "cuInit").args,
+        [Argument::new("flags", ArgValue::Unsigned(0))],
+        "the hand-written shim, not a generated pass-through, answered cuInit"
+    );
+    assert_eq!(
+        record(&records, "cuDriverGetVersion")
+            .args
+            .first()
+            .map(|arg| arg.name.as_str()),
+        Some("driver_version"),
+    );
 }

@@ -12,6 +12,9 @@ macro_rules! pass_through {
     // ── Hand-written: `handlers/init.rs` ──
     (fn cuInit $($rest:tt)*) => {};
     (fn cuDriverGetVersion $($rest:tt)*) => {};
+    // ── Hand-written: `handlers/device_binding.rs` ──
+    (fn cuCtxCreate_v4 $($rest:tt)*) => {};
+    (fn cuCtxDestroy_v2 $($rest:tt)*) => {};
     // ── Hand-written: `dispatch.rs` ──
     (fn cuGetProcAddress $($rest:tt)*) => {};
     (fn cuGetProcAddress_v2 $($rest:tt)*) => {};

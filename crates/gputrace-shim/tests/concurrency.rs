@@ -316,7 +316,11 @@ fn a_two_device_run_is_distinguishable_in_the_bundle() {
         };
         tagged.push(device);
 
-        assert_eq!(records.len(), CALLS_PER_THREAD + 2, "{thread:?}");
+        assert_eq!(
+            records.len(),
+            CALLS_PER_THREAD + 3,
+            "create, the device query, {CALLS_PER_THREAD} version calls, destroy: {thread:?}"
+        );
         assert_eq!(
             records.first().map(|record| record.function.as_str()),
             Some("cuCtxCreate_v4")
