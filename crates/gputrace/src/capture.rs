@@ -12,6 +12,8 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use gputrace_core::Fidelity;
+
 /// Overrides where the interposer is loaded from. Without it the interposer
 /// is taken from beside the `gputrace` executable.
 pub const INTERPOSER_ENV: &str = "GPUTRACE_INTERPOSER";
@@ -50,7 +52,7 @@ pub enum CaptureError {
 pub struct Capture {
     pub out: PathBuf,
     pub device: Option<String>,
-    pub golden: bool,
+    pub fidelity: Fidelity,
     pub target: Vec<OsString>,
 }
 
@@ -68,10 +70,7 @@ impl Capture {
             .args(args)
             .env(PRELOAD_ENV, preload(interposer))
             .env(BUNDLE_DIR_ENV, out)
-            .env(
-                FIDELITY_ENV,
-                if self.golden { "golden" } else { "replayable" },
-            );
+            .env(FIDELITY_ENV, self.fidelity.name());
         if let Some(device) = &self.device {
             command.env(VISIBLE_DEVICES_ENV, device);
         }
@@ -129,7 +128,7 @@ mod tests {
         Capture {
             out: PathBuf::from("trace"),
             device: None,
-            golden: false,
+            fidelity: Fidelity::Replayable,
             target: vec![OsString::from("/bin/true")],
         }
     }
@@ -171,14 +170,19 @@ mod tests {
         );
     }
 
+    /// The interposer reads this name out of the environment, so every level
+    /// the CLI accepts has to be one the interposer answers to.
     #[test]
-    fn golden_capture_asks_the_interposer_for_golden_fidelity() {
-        let mut capture = capture();
-        capture.golden = true;
-        assert_eq!(
-            env_of(&command_of(&capture), FIDELITY_ENV).as_deref(),
-            Some(OsStr::new("golden"))
-        );
+    fn every_fidelity_reaches_the_interposer_under_the_name_it_was_asked_for() {
+        for level in Fidelity::ALL {
+            let mut capture = capture();
+            capture.fidelity = level;
+            assert_eq!(
+                env_of(&command_of(&capture), FIDELITY_ENV).as_deref(),
+                Some(OsStr::new(level.name()))
+            );
+            assert_eq!(level.name().parse().ok(), Some(level));
+        }
     }
 
     #[test]

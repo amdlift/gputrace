@@ -17,5 +17,5 @@ pub use happens_before::HappensBefore;
 pub use identity::HandleIdentities;
 pub use trace::{
     ArgValue, Argument, BlobId, CallRecord, Fidelity, HandleBinding, HandleId, HandleRole,
-    PayloadRef, ThreadId,
+    PayloadRef, ThreadId, UnknownFidelity,
 };

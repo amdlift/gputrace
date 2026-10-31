@@ -3,14 +3,16 @@
 
 use std::process::{Command, Output};
 
-use gputrace_core::TraceBundle;
+use gputrace_core::{Fidelity, TraceBundle};
 use gputrace_testkit::{interposer, stub_libcuda, target_bin};
 use tempfile::TempDir;
 
-fn capture(out: &TempDir, args: &[&str]) -> Output {
+fn capture(out: &TempDir, args: &[&str], options: &[&str]) -> Output {
     interposer().expect("interposer is built");
     Command::new(env!("CARGO_BIN_EXE_gputrace"))
-        .args(["capture", "--out"])
+        .arg("capture")
+        .args(options)
+        .arg("--out")
         .arg(out.path().join("trace"))
         .arg("--")
         .arg(target_bin("capture_target"))
@@ -23,7 +25,7 @@ fn capture(out: &TempDir, args: &[&str]) -> Output {
 #[test]
 fn capture_records_the_targets_driver_calls_into_the_out_directory() {
     let out = TempDir::new().expect("tempdir");
-    let run = capture(&out, &[]);
+    let run = capture(&out, &[], &[]);
     assert!(
         run.status.success(),
         "{}",
@@ -43,7 +45,7 @@ fn capture_records_the_targets_driver_calls_into_the_out_directory() {
 #[test]
 fn the_targets_output_and_exit_status_pass_through_the_wrapper() {
     let out = TempDir::new().expect("tempdir");
-    let run = capture(&out, &["7"]);
+    let run = capture(&out, &["7"], &[]);
 
     assert_eq!(run.status.code(), Some(7));
     assert_eq!(String::from_utf8_lossy(&run.stdout), "out:driver=13040\n");
@@ -93,6 +95,38 @@ fn the_chosen_device_is_the_only_gpu_the_target_can_see() {
         [0],
         "a confined target renumbers its one GPU to zero, and records say so"
     );
+}
+
+/// User Story 10: the fidelity is the researcher's to choose, not something
+/// reachable only through an undocumented environment variable.
+#[test]
+fn each_fidelity_the_cli_offers_is_the_one_the_bundle_was_recorded_at() {
+    for level in Fidelity::ALL {
+        let out = TempDir::new().expect("tempdir");
+        let run = capture(&out, &[], &["--fidelity", level.name()]);
+        assert!(
+            run.status.success(),
+            "{level}: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        let bundle = TraceBundle::open(out.path().join("trace")).expect("bundle");
+        assert_eq!(bundle.manifest().capture.fidelity, level);
+    }
+}
+
+/// The spec's CLI contract keeps `--golden`, so it has to go on meaning the
+/// same thing the long form does.
+#[test]
+fn golden_is_the_shorthand_for_the_golden_fidelity() {
+    let out = TempDir::new().expect("tempdir");
+    let run = capture(&out, &[], &["--golden"]);
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let bundle = TraceBundle::open(out.path().join("trace")).expect("bundle");
+    assert_eq!(bundle.manifest().capture.fidelity, Fidelity::Golden);
 }
 
 /// Heavy capture against the GPU that drives the display can freeze the

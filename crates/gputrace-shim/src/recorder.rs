@@ -601,11 +601,11 @@ fn sole_device(selection: &str) -> Option<u32> {
 /// payloads a replay needs.
 fn fidelity() -> Fidelity {
     static FIDELITY: OnceLock<Fidelity> = OnceLock::new();
-    *FIDELITY.get_or_init(|| match env::var(FIDELITY_ENV).as_deref() {
-        Ok("metadata") => Fidelity::Metadata,
-        Ok("handles") => Fidelity::Handles,
-        Ok("golden") => Fidelity::Golden,
-        _ => Fidelity::Replayable,
+    *FIDELITY.get_or_init(|| {
+        env::var(FIDELITY_ENV)
+            .ok()
+            .and_then(|name| name.parse().ok())
+            .unwrap_or(Fidelity::Replayable)
     })
 }
 
