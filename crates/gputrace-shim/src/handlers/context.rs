@@ -145,7 +145,7 @@ macro_rules! destroy_shims {
 /// onto the named context's device. The record is tagged with where the
 /// thread lands, the way a `cuCtxCreate` record is.
 macro_rules! enter_shims {
-    ($($symbol:ident $(, stacking: $stacking:literal)?;)*) => {$(
+    ($($symbol:ident, remembers_the_previous: $stacks:literal;)*) => {$(
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $symbol(ctx: CUcontext) -> CUresult {
             static REAL: DriverFn<unsafe extern "C" fn(CUcontext) -> CUresult> =
@@ -161,10 +161,10 @@ macro_rules! enter_shims {
                 None => CUDA_ERROR_NOT_FOUND,
             };
             if result == CUDA_SUCCESS {
-                $(let _: bool = $stacking;
-                  PUSHED_DEVICES.with_borrow_mut(|stack| {
-                      stack.push(recorder::bound_device())
-                  });)?
+                if $stacks {
+                    PUSHED_DEVICES
+                        .with_borrow_mut(|stack| stack.push(recorder::bound_device()));
+                }
                 recorder::bind_device(device_of(context));
             }
             call.finish_deep(result, deep);
@@ -246,9 +246,9 @@ destroy_shims! {
 }
 
 enter_shims! {
-    cuCtxSetCurrent;
-    cuCtxPushCurrent, stacking: true;
-    cuCtxPushCurrent_v2, stacking: true;
+    cuCtxSetCurrent, remembers_the_previous: false;
+    cuCtxPushCurrent, remembers_the_previous: true;
+    cuCtxPushCurrent_v2, remembers_the_previous: true;
 }
 
 leave_shims! {
