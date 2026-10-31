@@ -1,5 +1,6 @@
 use gputrace_core::{
-    BundleWriter, CallRecord, CaptureConfig, Fidelity, SCHEMA_VERSION, ThreadId, TraceBundle,
+    ArgValue, Argument, BundleWriter, CallRecord, CaptureConfig, Fidelity, HandleBinding, HandleId,
+    HandleRole, PayloadRef, SCHEMA_VERSION, ThreadId, TraceBundle,
 };
 
 #[test]
@@ -167,5 +168,52 @@ fn manifest_is_human_readable_json_carrying_a_schema_version() {
     assert!(
         text.contains("\n  \"schema_version\""),
         "manifest should be indented for reading by hand:\n{text}"
+    );
+}
+
+#[test]
+fn records_carry_arguments_handle_bindings_and_payload_refs() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("trace");
+
+    let writer = BundleWriter::create(&root, cuda_capture()).unwrap();
+    let payload: &[u8] = &[0x01, 0x02, 0x03, 0x04];
+    let blob = writer.blobs().put(payload).unwrap();
+
+    let record = CallRecord {
+        args: vec![
+            Argument::new("dstDevice", ArgValue::DevicePtr(0x7f00_0000)),
+            Argument::new("ByteCount", ArgValue::Unsigned(4)),
+            Argument::new("hStream", ArgValue::Handle(HandleId(9))),
+        ],
+        handles: vec![
+            HandleBinding {
+                id: HandleId(9),
+                role: HandleRole::Consumed,
+            },
+            HandleBinding {
+                id: HandleId(10),
+                role: HandleRole::Produced,
+            },
+        ],
+        payloads: vec![PayloadRef {
+            role: "h2d".into(),
+            blob: blob.clone(),
+            len: payload.len() as u64,
+        }],
+        ..CallRecord::new("cuMemcpyHtoDAsync_v2", 5, 123_456, 0)
+    };
+
+    let mut segment = writer.open_segment(ThreadId(1)).unwrap();
+    segment.write(&record).unwrap();
+    segment.finish().unwrap();
+    writer.finish().unwrap();
+
+    let bundle = TraceBundle::open(&root).unwrap();
+    let read = bundle.read_segment(ThreadId(1)).unwrap();
+    assert_eq!(read, [record]);
+    assert_eq!(
+        bundle.read_blob(&read[0].payloads[0].blob).unwrap(),
+        payload
     );
 }

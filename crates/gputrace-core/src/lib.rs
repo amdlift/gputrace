@@ -11,4 +11,7 @@ pub use bundle::{
     BlobStore, BundleError, BundleWriter, CaptureConfig, Manifest, SCHEMA_VERSION, SegmentWriter,
     ThreadSummary, TraceBundle,
 };
-pub use trace::{BlobId, CallRecord, Fidelity, HandleId, ThreadId};
+pub use trace::{
+    ArgValue, Argument, BlobId, CallRecord, Fidelity, HandleBinding, HandleId, HandleRole,
+    PayloadRef, ThreadId,
+};
