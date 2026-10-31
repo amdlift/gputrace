@@ -1,0 +1,19 @@
+[package]
+name = "gputrace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "gputrace"
+path = "src/main.rs"
+
+[dependencies]
+gputrace-core.workspace = true
+clap.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+gputrace-testkit = { path = "../gputrace-testkit" }
+tempfile.workspace = true
