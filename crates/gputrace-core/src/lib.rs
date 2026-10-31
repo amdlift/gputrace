@@ -7,5 +7,7 @@ pub mod bundle;
 pub mod trace;
 
 pub use backend::Backend;
-pub use bundle::{BundleError, BundleWriter, CaptureConfig, Manifest, SCHEMA_VERSION, TraceBundle};
-pub use trace::{BlobId, CallRecord, Fidelity, HandleId};
+pub use bundle::{
+    BundleError, BundleWriter, CaptureConfig, Manifest, SCHEMA_VERSION, SegmentWriter, TraceBundle,
+};
+pub use trace::{BlobId, CallRecord, Fidelity, HandleId, ThreadId};

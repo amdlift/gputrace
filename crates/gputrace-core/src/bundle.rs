@@ -1,15 +1,22 @@
-use std::fs;
+use std::fs::{self, File};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::trace::Fidelity;
+use crate::trace::{CallRecord, Fidelity, ThreadId};
 
 /// Bumped whenever the on-disk layout or record schema changes
 /// incompatibly, so a consumer can refuse a bundle it cannot read.
 pub const SCHEMA_VERSION: u32 = 1;
 
 const MANIFEST_FILE: &str = "manifest.json";
+const SEGMENTS_DIR: &str = "segments";
+
+fn segment_path(root: &Path, thread: ThreadId) -> PathBuf {
+    root.join(SEGMENTS_DIR)
+        .join(format!("thread-{}.seg", thread.0))
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum BundleError {
@@ -25,6 +32,14 @@ pub enum BundleError {
         #[source]
         source: serde_json::Error,
     },
+    #[error("malformed segment {path}: {source}")]
+    Segment {
+        path: PathBuf,
+        #[source]
+        source: postcard::Error,
+    },
+    #[error("truncated segment {path}")]
+    TruncatedSegment { path: PathBuf },
 }
 
 pub type Result<T> = std::result::Result<T, BundleError>;
@@ -80,6 +95,21 @@ impl BundleWriter {
         &self.root
     }
 
+    /// Opens an independent writer for one host thread's records. Segment
+    /// writers share no state, so a background drain thread can hold one per
+    /// captured thread without any of them contending.
+    pub fn open_segment(&self, thread: ThreadId) -> Result<SegmentWriter> {
+        let path = segment_path(&self.root, thread);
+        let dir = self.root.join(SEGMENTS_DIR);
+        fs::create_dir_all(&dir).map_err(io(&dir))?;
+        let file = File::create(&path).map_err(io(&path))?;
+        Ok(SegmentWriter {
+            path,
+            out: BufWriter::new(file),
+            scratch: Vec::new(),
+        })
+    }
+
     pub fn finish(self) -> Result<()> {
         let manifest = Manifest {
             schema_version: SCHEMA_VERSION,
@@ -93,6 +123,32 @@ impl BundleWriter {
             })?;
         fs::write(&path, format!("{json}\n")).map_err(io(&path))?;
         Ok(())
+    }
+}
+
+/// Appends one host thread's call records to its own segment file.
+pub struct SegmentWriter {
+    path: PathBuf,
+    out: BufWriter<File>,
+    scratch: Vec<u8>,
+}
+
+impl SegmentWriter {
+    pub fn write(&mut self, record: &CallRecord) -> Result<()> {
+        self.scratch.clear();
+        postcard::to_io(record, &mut self.scratch).map_err(|source| BundleError::Segment {
+            path: self.path.clone(),
+            source,
+        })?;
+        let len = u32::try_from(self.scratch.len()).expect("call record exceeds 4 GiB");
+        self.out
+            .write_all(&len.to_le_bytes())
+            .and_then(|()| self.out.write_all(&self.scratch))
+            .map_err(io(&self.path))
+    }
+
+    pub fn finish(mut self) -> Result<()> {
+        self.out.flush().map_err(io(&self.path))
     }
 }
 
@@ -118,5 +174,29 @@ impl TraceBundle {
 
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
+    }
+
+    pub fn read_segment(&self, thread: ThreadId) -> Result<Vec<CallRecord>> {
+        let path = segment_path(&self.root, thread);
+        let bytes = fs::read(&path).map_err(io(&path))?;
+        let mut records = Vec::new();
+        let mut rest = bytes.as_slice();
+        while !rest.is_empty() {
+            let (header, body) = rest
+                .split_at_checked(4)
+                .ok_or_else(|| BundleError::TruncatedSegment { path: path.clone() })?;
+            let len = u32::from_le_bytes(header.try_into().unwrap()) as usize;
+            let (frame, tail) = body
+                .split_at_checked(len)
+                .ok_or_else(|| BundleError::TruncatedSegment { path: path.clone() })?;
+            records.push(
+                postcard::from_bytes(frame).map_err(|source| BundleError::Segment {
+                    path: path.clone(),
+                    source,
+                })?,
+            );
+            rest = tail;
+        }
+        Ok(records)
     }
 }
