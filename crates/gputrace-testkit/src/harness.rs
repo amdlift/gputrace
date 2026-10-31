@@ -113,6 +113,15 @@ impl CaptureRun {
         &self.stub_calls
     }
 
+    /// How many times the stub answered `symbol`. Order is not meaningful
+    /// across host threads, so a concurrent target asserts on counts.
+    pub fn stub_call_count(&self, symbol: &str) -> usize {
+        self.stub_calls
+            .iter()
+            .filter(|call| *call == symbol)
+            .count()
+    }
+
     pub fn bundle_path(&self) -> &Path {
         &self.bundle
     }

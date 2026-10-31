@@ -174,3 +174,26 @@ fn the_stub_serves_the_dispatch_table() {
         ]
     );
 }
+
+#[test]
+fn every_host_thread_reaches_the_stub() {
+    let harness = Harness::new().expect("harness");
+    let run = harness
+        .run(target_bin("multi_thread"), &[])
+        .expect("run target");
+
+    assert!(run.status().success(), "target failed: {}", run.stderr());
+    assert_eq!(run.stdout(), "round_trips=4\n");
+
+    assert_eq!(run.stub_call_count("cuInit"), 1);
+    for symbol in [
+        "cuCtxCreate_v4",
+        "cuMemAlloc_v2",
+        "cuMemcpyHtoD_v2",
+        "cuMemcpyDtoH_v2",
+        "cuMemFree_v2",
+        "cuCtxDestroy_v2",
+    ] {
+        assert_eq!(run.stub_call_count(symbol), 4, "{symbol}");
+    }
+}
