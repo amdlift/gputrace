@@ -235,6 +235,9 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "gputrace-core",
+ "gputrace-testkit",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]

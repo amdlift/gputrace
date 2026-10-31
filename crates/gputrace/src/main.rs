@@ -1,6 +1,11 @@
 //! gputrace CLI: orchestrates capture, replay, mutate, fuzz, validate, and
 //! inspect against CUDA Driver API trace bundles.
 
+mod capture;
+
+use std::ffi::OsString;
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -25,10 +30,10 @@ enum Command {
         golden: bool,
         /// Output trace bundle directory.
         #[arg(short, long, default_value = "trace")]
-        out: String,
+        out: PathBuf,
         /// The target command and its arguments.
         #[arg(last = true, required = true)]
-        target: Vec<String>,
+        target: Vec<OsString>,
     },
     /// Faithfully re-issue a trace bundle against the real driver.
     Replay {
@@ -66,7 +71,26 @@ enum Command {
 fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Command::Capture { .. } => unimplemented!("capture"),
+        Command::Capture {
+            device,
+            golden,
+            out,
+            target,
+        } => {
+            let capture = capture::Capture {
+                out,
+                device,
+                golden,
+                target,
+            };
+            match capture.run() {
+                Ok(never) => match never {},
+                Err(e) => {
+                    eprintln!("gputrace: {e}");
+                    std::process::exit(2);
+                }
+            }
+        }
         Command::Replay { .. } => unimplemented!("replay"),
         Command::Mutate { .. } => unimplemented!("mutate"),
         Command::Fuzz { .. } => unimplemented!("fuzz"),
