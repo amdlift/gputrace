@@ -94,3 +94,25 @@ fn the_chosen_device_is_the_only_gpu_the_target_can_see() {
         "a confined target renumbers its one GPU to zero, and records say so"
     );
 }
+
+/// Heavy capture against the GPU that drives the display can freeze the
+/// desktop or trigger an Xid reset. A researcher meets `--device` in the
+/// flag's own help long before they open a document, so the warning has to
+/// be there.
+#[test]
+fn the_device_flag_warns_about_capturing_on_the_display_gpu() {
+    let help = Command::new(env!("CARGO_BIN_EXE_gputrace"))
+        .args(["capture", "--help"])
+        .output()
+        .expect("run gputrace capture --help");
+    let help = String::from_utf8_lossy(&help.stdout).into_owned();
+
+    for mention in [
+        "--device",
+        "display",
+        "Xid",
+        "docs/choosing-a-capture-gpu.md",
+    ] {
+        assert!(help.contains(mention), "no {mention} in:\n{help}");
+    }
+}
