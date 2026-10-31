@@ -5,4 +5,5 @@ mod context;
 mod handles;
 mod init;
 mod memory;
+mod module;
 mod stream;

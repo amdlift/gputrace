@@ -521,3 +521,65 @@ fn a_known_cross_stream_edge_is_reconstructable_from_the_bundle() {
         Reason::Event(record_op.event.expect("an event"))
     );
 }
+
+/// What `module_launch` loads. The image is nul-terminated PTX, and the
+/// ABI hands the driver nothing but that pointer, so the capture is only
+/// right if it read exactly as far as the format says.
+const PTX: &[u8] = b".version 8.0\n.target sm_86\n.visible .entry kernel_a() { ret; }\n.visible .entry kernel_b() { ret; }\n";
+
+#[test]
+fn a_loaded_module_image_is_captured_as_a_blob_the_load_record_names() {
+    let run = run("module_launch");
+    let bundle = run.bundle().expect("bundle");
+    let records = records(&bundle);
+
+    let load = record(&records, "cuModuleLoadData");
+    let (blob, len) = payload(&load, "module_image");
+    assert_eq!(len, PTX.len() as u64);
+    assert_eq!(bundle.read_blob(&blob).expect("blob"), PTX);
+}
+
+/// A kernel is reached by name through the module that defines it, and the
+/// name is the only thing in the call a replay could look the kernel up by.
+#[test]
+fn a_kernel_lookup_names_its_module_and_the_name_it_asked_for() {
+    let run = run("module_launch");
+    let bundle = run.bundle().expect("bundle");
+    let records = records(&bundle);
+
+    let module = bound(&record(&records, "cuModuleLoadData"), HandleRole::Produced);
+    let looked_up = |index: usize| {
+        let lookup = nth(&records, "cuModuleGetFunction", index);
+        assert_eq!(handle_arg(&lookup, "hmod"), module);
+        (arg(&lookup, "name"), lookup)
+    };
+
+    let (first_name, first) = looked_up(0);
+    let (again_name, again) = looked_up(1);
+    let (other_name, other) = looked_up(2);
+    assert_eq!(first_name, ArgValue::Str("kernel_a".to_owned()));
+    assert_eq!(again_name, ArgValue::Str("kernel_a".to_owned()));
+    assert_eq!(other_name, ArgValue::Str("kernel_b".to_owned()));
+
+    let kernel_a = bound(&first, HandleRole::Produced);
+    assert_eq!(bound(&again, HandleRole::Produced), kernel_a);
+    assert_ne!(bound(&other, HandleRole::Produced), kernel_a);
+    assert_ne!(kernel_a, module, "a function is not its module");
+
+    let missing = looked_up(3).1;
+    assert_ne!(
+        missing.result, 0,
+        "the fixture asks for a kernel that is absent"
+    );
+    assert!(
+        missing
+            .handles
+            .iter()
+            .all(|binding| binding.role != HandleRole::Produced)
+    );
+
+    assert_eq!(
+        bound(&record(&records, "cuModuleUnload"), HandleRole::Destroyed),
+        module
+    );
+}

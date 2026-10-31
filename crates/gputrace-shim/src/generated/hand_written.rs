@@ -40,6 +40,12 @@ macro_rules! pass_through {
     (fn cuMemcpyHtoDAsync $($rest:tt)*) => {};
     (fn cuMemcpyHtoDAsync_v2 $($rest:tt)*) => {};
     (fn cuMemcpyHtoDAsync_v2_ptsz $($rest:tt)*) => {};
+    // ── Hand-written: `handlers/module.rs` ──
+    (fn cuModuleLoadData $($rest:tt)*) => {};
+    (fn cuModuleLoadDataEx $($rest:tt)*) => {};
+    (fn cuModuleLoadFatBinary $($rest:tt)*) => {};
+    (fn cuModuleGetFunction $($rest:tt)*) => {};
+    (fn cuModuleUnload $($rest:tt)*) => {};
     // ── Hand-written: `handlers/stream.rs` ──
     (fn cuStreamCreate $($rest:tt)*) => {};
     (fn cuStreamCreateWithPriority $($rest:tt)*) => {};
