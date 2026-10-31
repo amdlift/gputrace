@@ -90,7 +90,7 @@ fn the_chosen_device_is_the_only_gpu_the_target_can_see() {
             .environment
             .devices
             .iter()
-            .map(|device| device.ordinal)
+            .map(|device| device.device)
             .collect::<Vec<_>>(),
         [0],
         "a confined target renumbers its one GPU to zero, and records say so"

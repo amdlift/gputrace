@@ -549,14 +549,14 @@ impl Observed {
             self.asked_for_the_version = true;
             self.driver_version = environment::driver_version();
         }
-        let Some(ordinal) = record.device else {
+        let Some(device) = record.device else {
             return;
         };
         self.devices
-            .entry(ordinal)
+            .entry(device)
             .or_insert_with(|| DeviceSummary {
-                ordinal,
-                compute_capability: environment::compute_capability(ordinal),
+                device,
+                compute_capability: environment::compute_capability(device),
                 records: 0,
             })
             .records += 1;
@@ -639,14 +639,14 @@ fn binds_the_thread(function: &str) -> bool {
     function.starts_with("cuCtxCreate") || function.starts_with("cuDevicePrimaryCtxRetain")
 }
 
-/// The device ordinal a call passed by value. A `CUdevice` out-parameter is
+/// The `CUdevice` a call passed by value. A `CUdevice` out-parameter is
 /// recorded as a pointer, so a call that only asks for a device never looks
 /// like one that targets it.
 fn named_device(args: &[Argument]) -> Option<u32> {
     args.iter()
         .find_map(|arg| match (arg.name.as_str(), &arg.value) {
-            ("dev" | "device", ArgValue::Signed(ordinal)) => u32::try_from(*ordinal).ok(),
-            ("dev" | "device", ArgValue::Unsigned(ordinal)) => u32::try_from(*ordinal).ok(),
+            ("dev" | "device", ArgValue::Signed(device)) => u32::try_from(*device).ok(),
+            ("dev" | "device", ArgValue::Unsigned(device)) => u32::try_from(*device).ok(),
             _ => None,
         })
 }
@@ -810,8 +810,8 @@ mod target_device_tests {
 
     use gputrace_core::{ArgValue, Argument};
 
-    fn by_value(name: &str, ordinal: i64) -> Vec<Argument> {
-        vec![Argument::new(name, ArgValue::Signed(ordinal))]
+    fn by_value(name: &str, device: i64) -> Vec<Argument> {
+        vec![Argument::new(name, ArgValue::Signed(device))]
     }
 
     #[test]

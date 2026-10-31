@@ -322,7 +322,7 @@ fn the_environment_round_trips_through_the_manifest() {
     let environment = Environment {
         driver_version: Some(13040),
         devices: vec![DeviceSummary {
-            ordinal: 1,
+            device: 1,
             compute_capability: Some(ComputeCapability { major: 8, minor: 6 }),
             records: 42,
         }],
@@ -351,7 +351,7 @@ fn an_environment_the_driver_would_not_describe_stays_empty() {
         .finish_with(Environment {
             driver_version: None,
             devices: vec![DeviceSummary {
-                ordinal: 0,
+                device: 0,
                 compute_capability: None,
                 records: 3,
             }],

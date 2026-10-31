@@ -188,7 +188,7 @@ fn the_manifest_records_the_driver_and_the_gpu_the_capture_ran_against() {
     assert_eq!(
         environment.devices,
         [DeviceSummary {
-            ordinal: 0,
+            device: 0,
             compute_capability: Some(ComputeCapability { major: 8, minor: 6 }),
             records: 1,
         }],
@@ -215,7 +215,7 @@ fn a_multi_gpu_capture_describes_every_device_its_records_named() {
     assert_eq!(
         summaries
             .iter()
-            .map(|device| device.ordinal)
+            .map(|device| device.device)
             .collect::<Vec<_>>(),
         [0, 1]
     );
@@ -226,10 +226,10 @@ fn a_multi_gpu_capture_describes_every_device_its_records_named() {
         );
         let tagged = records
             .iter()
-            .filter(|record| record.device == Some(device.ordinal))
+            .filter(|record| record.device == Some(device.device))
             .count();
-        assert!(tagged > 0, "device {} never appeared", device.ordinal);
-        assert_eq!(device.records as usize, tagged, "device {}", device.ordinal);
+        assert!(tagged > 0, "device {} never appeared", device.device);
+        assert_eq!(device.records as usize, tagged, "device {}", device.device);
     }
 }
 

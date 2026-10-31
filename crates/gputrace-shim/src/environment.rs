@@ -33,10 +33,10 @@ pub fn driver_version() -> Option<u32> {
     u32::try_from(version).ok()
 }
 
-/// The architecture generation of the device the captured process knows by
-/// `ordinal`.
-pub fn compute_capability(ordinal: u32) -> Option<ComputeCapability> {
-    let device = c_int::try_from(ordinal).ok()?;
+/// The architecture generation of the GPU the captured process named by the
+/// `CUdevice` `device`.
+pub fn compute_capability(device: u32) -> Option<ComputeCapability> {
+    let device = c_int::try_from(device).ok()?;
     Some(ComputeCapability {
         major: attribute(COMPUTE_CAPABILITY_MAJOR, device)?,
         minor: attribute(COMPUTE_CAPABILITY_MINOR, device)?,
