@@ -1,6 +1,9 @@
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -13,9 +16,8 @@ pub const SCHEMA_VERSION: u32 = 1;
 const MANIFEST_FILE: &str = "manifest.json";
 const SEGMENTS_DIR: &str = "segments";
 
-fn segment_path(root: &Path, thread: ThreadId) -> PathBuf {
-    root.join(SEGMENTS_DIR)
-        .join(format!("thread-{}.seg", thread.0))
+fn segment_name(thread: ThreadId) -> String {
+    format!("{SEGMENTS_DIR}/thread-{}.seg", thread.0)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -71,24 +73,39 @@ impl Default for CaptureConfig {
     }
 }
 
+/// One captured host thread: where its records live and how many there are.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadSummary {
+    pub thread: ThreadId,
+    /// Path of the thread's segment file, relative to the bundle root.
+    pub segment: String,
+    pub records: u64,
+}
+
 /// The human-readable index of a trace bundle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     pub schema_version: u32,
     pub capture: CaptureConfig,
+    pub threads: Vec<ThreadSummary>,
 }
 
 /// Writes a trace bundle directory.
 pub struct BundleWriter {
     root: PathBuf,
     capture: CaptureConfig,
+    threads: Mutex<Vec<(ThreadId, Arc<AtomicU64>)>>,
 }
 
 impl BundleWriter {
     pub fn create(root: impl AsRef<Path>, capture: CaptureConfig) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
         fs::create_dir_all(&root).map_err(io(&root))?;
-        Ok(Self { root, capture })
+        Ok(Self {
+            root,
+            capture,
+            threads: Mutex::new(Vec::new()),
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -99,21 +116,39 @@ impl BundleWriter {
     /// writers share no state, so a background drain thread can hold one per
     /// captured thread without any of them contending.
     pub fn open_segment(&self, thread: ThreadId) -> Result<SegmentWriter> {
-        let path = segment_path(&self.root, thread);
         let dir = self.root.join(SEGMENTS_DIR);
         fs::create_dir_all(&dir).map_err(io(&dir))?;
+        let path = self.root.join(segment_name(thread));
         let file = File::create(&path).map_err(io(&path))?;
+        let records = Arc::new(AtomicU64::new(0));
+        self.threads
+            .lock()
+            .expect("bundle thread registry poisoned")
+            .push((thread, Arc::clone(&records)));
         Ok(SegmentWriter {
             path,
             out: BufWriter::new(file),
             scratch: Vec::new(),
+            records,
         })
     }
 
     pub fn finish(self) -> Result<()> {
+        let threads = self
+            .threads
+            .into_inner()
+            .expect("bundle thread registry poisoned")
+            .into_iter()
+            .map(|(thread, records)| ThreadSummary {
+                thread,
+                segment: segment_name(thread),
+                records: records.load(Ordering::Relaxed),
+            })
+            .collect();
         let manifest = Manifest {
             schema_version: SCHEMA_VERSION,
             capture: self.capture,
+            threads,
         };
         let path = self.root.join(MANIFEST_FILE);
         let json =
@@ -131,6 +166,7 @@ pub struct SegmentWriter {
     path: PathBuf,
     out: BufWriter<File>,
     scratch: Vec<u8>,
+    records: Arc<AtomicU64>,
 }
 
 impl SegmentWriter {
@@ -144,7 +180,9 @@ impl SegmentWriter {
         self.out
             .write_all(&len.to_le_bytes())
             .and_then(|()| self.out.write_all(&self.scratch))
-            .map_err(io(&self.path))
+            .map_err(io(&self.path))?;
+        self.records.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
     pub fn finish(mut self) -> Result<()> {
@@ -176,8 +214,12 @@ impl TraceBundle {
         &self.manifest
     }
 
+    pub fn threads(&self) -> &[ThreadSummary] {
+        &self.manifest.threads
+    }
+
     pub fn read_segment(&self, thread: ThreadId) -> Result<Vec<CallRecord>> {
-        let path = segment_path(&self.root, thread);
+        let path = self.root.join(segment_name(thread));
         let bytes = fs::read(&path).map_err(io(&path))?;
         let mut records = Vec::new();
         let mut rest = bytes.as_slice();
