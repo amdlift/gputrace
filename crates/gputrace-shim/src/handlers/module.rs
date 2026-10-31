@@ -11,14 +11,10 @@ use std::ffi::{CStr, c_char, c_uint, c_void};
 
 use gputrace_core::{ArgValue, Argument, HandleId};
 
-use crate::handlers::handles::{HandleKind, handle_id};
+use crate::generated::cuda_types::{CUfunction, CUmodule};
+use crate::handlers::handles::{HandleKind, handle_id, handle_value};
 use crate::recorder;
-use crate::shim::{CUDA_ERROR_NOT_FOUND, CUresult, DriverFn, RecordArg};
-
-const CUDA_SUCCESS: CUresult = 0;
-
-type CUmodule = *mut c_void;
-type CUfunction = *mut c_void;
+use crate::shim::{CUDA_ERROR_NOT_FOUND, CUDA_SUCCESS, CUresult, DriverFn, RecordArg};
 
 /// What a captured module image is called in a record's payloads.
 const MODULE_IMAGE: &str = "module_image";
@@ -27,13 +23,7 @@ const MODULE_IMAGE: &str = "module_image";
 const FATBIN_MAGIC: u32 = 0xba55_ed50;
 
 fn module_arg(name: &'static str, module: CUmodule) -> Argument {
-    Argument::new(
-        name,
-        match module_id(module) {
-            Some(id) => ArgValue::Handle(id),
-            None => ArgValue::Null,
-        },
-    )
+    Argument::new(name, handle_value(module_id(module)))
 }
 
 fn module_id(module: CUmodule) -> Option<HandleId> {
@@ -157,10 +147,7 @@ macro_rules! get_function_shims {
             };
             let deep = call
                 .deep(vec![
-                    Argument::new("hfunc", match function_id(found) {
-                        Some(id) => ArgValue::Handle(id),
-                        None => ArgValue::Null,
-                    }),
+                    Argument::new("hfunc", handle_value(function_id(found))),
                     module_arg("hmod", hmod),
                     Argument::new("name", match unsafe { kernel_name(name) } {
                         Some(name) => ArgValue::Str(name),

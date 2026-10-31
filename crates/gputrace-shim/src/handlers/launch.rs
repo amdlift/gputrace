@@ -17,13 +17,11 @@ use std::ffi::{c_uint, c_void};
 
 use gputrace_core::{ArgValue, Argument, HandleId};
 
-use crate::handlers::handles::{HandleKind, handle_id};
+use crate::generated::cuda_types::{CUfunction, CUstream};
+use crate::handlers::handles::{HandleKind, handle_id, handle_value};
 use crate::handlers::stream::{stream_arg, stream_of};
 use crate::recorder::{self, DeepCall};
 use crate::shim::{CUDA_ERROR_NOT_FOUND, CUresult, DriverFn};
-
-type CUfunction = *mut c_void;
-type CUstream = *mut c_void;
 
 /// What a captured argument buffer is called in a record's payloads.
 const KERNEL_PARAMS: &str = "kernel_params";
@@ -106,10 +104,7 @@ macro_rules! launch_shims {
             let call = recorder::begin(stringify!($symbol));
             let deep = call
                 .deep(vec![
-                    Argument::new("f", match function_id(f) {
-                        Some(id) => ArgValue::Handle(id),
-                        None => ArgValue::Null,
-                    }),
+                    Argument::new("f", handle_value(function_id(f))),
                     Argument::new("gridDimX", ArgValue::Unsigned(u64::from(grid_dim_x))),
                     Argument::new("gridDimY", ArgValue::Unsigned(u64::from(grid_dim_y))),
                     Argument::new("gridDimZ", ArgValue::Unsigned(u64::from(grid_dim_z))),

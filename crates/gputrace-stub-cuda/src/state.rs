@@ -96,7 +96,6 @@ impl State {
         Some(base)
     }
 
-    /// Give up the allocation at `ptr`, answering whether it was live.
     pub fn release(&mut self, ptr: CUdeviceptr) -> bool {
         let Some(block) = self.allocations.remove(&ptr) else {
             return false;

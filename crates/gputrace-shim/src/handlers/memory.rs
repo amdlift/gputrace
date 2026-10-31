@@ -12,13 +12,12 @@ use std::ffi::{c_uint, c_void};
 
 use gputrace_core::{ArgValue, Argument};
 
+use crate::generated::cuda_types::CUstream;
 use crate::handlers::golden::{self, GOLDEN_OUTPUT};
 use crate::handlers::handles::{HandleKind, handle_id};
 use crate::handlers::stream::{stream_arg, stream_of};
 use crate::recorder;
-use crate::shim::{CUDA_ERROR_NOT_FOUND, CUresult, DriverFn, RecordArg};
-
-const CUDA_SUCCESS: CUresult = 0;
+use crate::shim::{CUDA_ERROR_NOT_FOUND, CUDA_SUCCESS, CUresult, DriverFn, RecordArg};
 
 /// `cuMemAlloc`, which hands back a device pointer the trace must be able to
 /// follow. The pointer is recorded as the call's product, not as the host
@@ -169,10 +168,10 @@ macro_rules! alloc_async_shims {
         pub unsafe extern "C" fn $symbol(
             dptr: *mut u64,
             bytesize: usize,
-            h_stream: *mut c_void,
+            h_stream: CUstream,
         ) -> CUresult {
             static REAL: DriverFn<
-                unsafe extern "C" fn(*mut u64, usize, *mut c_void) -> CUresult,
+                unsafe extern "C" fn(*mut u64, usize, CUstream) -> CUresult,
             > = DriverFn::new(concat!(stringify!($symbol), "\0").as_bytes());
 
             let call = recorder::begin(stringify!($symbol));
@@ -202,8 +201,8 @@ macro_rules! alloc_async_shims {
 macro_rules! free_async_shims {
     ($($symbol:ident;)*) => {$(
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $symbol(dptr: u64, h_stream: *mut c_void) -> CUresult {
-            static REAL: DriverFn<unsafe extern "C" fn(u64, *mut c_void) -> CUresult> =
+        pub unsafe extern "C" fn $symbol(dptr: u64, h_stream: CUstream) -> CUresult {
+            static REAL: DriverFn<unsafe extern "C" fn(u64, CUstream) -> CUresult> =
                 DriverFn::new(concat!(stringify!($symbol), "\0").as_bytes());
 
             let call = recorder::begin(stringify!($symbol));
@@ -234,10 +233,10 @@ macro_rules! copy_to_device_async_shims {
             dst_device: $pointer,
             src_host: *const c_void,
             byte_count: $size,
-            h_stream: *mut c_void,
+            h_stream: CUstream,
         ) -> CUresult {
             static REAL: DriverFn<
-                unsafe extern "C" fn($pointer, *const c_void, $size, *mut c_void) -> CUresult,
+                unsafe extern "C" fn($pointer, *const c_void, $size, CUstream) -> CUresult,
             > = DriverFn::new(concat!(stringify!($symbol), "\0").as_bytes());
 
             let destination = u64::from(dst_device);
@@ -278,10 +277,10 @@ macro_rules! copy_to_host_async_shims {
             dst_host: *mut c_void,
             src_device: $pointer,
             byte_count: $size,
-            h_stream: *mut c_void,
+            h_stream: CUstream,
         ) -> CUresult {
             static REAL: DriverFn<
-                unsafe extern "C" fn(*mut c_void, $pointer, $size, *mut c_void) -> CUresult,
+                unsafe extern "C" fn(*mut c_void, $pointer, $size, CUstream) -> CUresult,
             > = DriverFn::new(concat!(stringify!($symbol), "\0").as_bytes());
 
             let source = u64::from(src_device);

@@ -16,6 +16,6 @@ pub use bundle::{
 pub use happens_before::HappensBefore;
 pub use identity::HandleIdentities;
 pub use trace::{
-    ArgValue, Argument, BlobId, CallRecord, Fidelity, HandleBinding, HandleId, HandleRole,
-    PayloadRef, ThreadId, UnknownFidelity,
+    ArgValue, Argument, BlobId, CallRecord, EVENT_ARG, Fidelity, HandleBinding, HandleId,
+    HandleRole, PayloadRef, STREAM_ARG, ThreadId, UnknownFidelity,
 };

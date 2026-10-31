@@ -59,6 +59,16 @@ impl std::fmt::Display for Fidelity {
     }
 }
 
+/// What a record calls the stream the call was issued into.
+///
+/// Capture records CUDA's own spelling and the offline reconstruction finds a
+/// call's stream by this name, so the two sides share one definition: were
+/// they to drift, the happens-before graph would go quietly blind rather than
+/// fail to build.
+pub const STREAM_ARG: &str = "hStream";
+/// What a record calls the event the call records or waits on.
+pub const EVENT_ARG: &str = "hEvent";
+
 /// The host thread a segment belongs to. Capture attributes every record
 /// to the thread that made the call; there is no global ordering (ADR-0004).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

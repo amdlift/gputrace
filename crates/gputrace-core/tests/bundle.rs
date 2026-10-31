@@ -131,8 +131,8 @@ fn identical_payloads_dedup_to_one_content_addressed_blob() {
     assert_eq!(stored, 2, "identical payloads must share one file");
 
     let bundle = TraceBundle::open(&root).unwrap();
-    assert_eq!(bundle.read_blob(&first).unwrap(), b"h2d payload");
-    assert_eq!(bundle.read_blob(&other).unwrap(), b"ptx module image");
+    assert_eq!(bundle.blobs().get(&first).unwrap(), b"h2d payload");
+    assert_eq!(bundle.blobs().get(&other).unwrap(), b"ptx module image");
 }
 
 #[test]
@@ -215,7 +215,7 @@ fn records_carry_arguments_handle_bindings_and_payload_refs() {
     let read = bundle.read_segment(ThreadId(1)).unwrap();
     assert_eq!(read, [record]);
     assert_eq!(
-        bundle.read_blob(&read[0].payloads[0].blob).unwrap(),
+        bundle.blobs().get(&read[0].payloads[0].blob).unwrap(),
         payload
     );
 }

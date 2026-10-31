@@ -11,7 +11,7 @@
 //! is `gputrace_core::identity`'s job, offline, from the bindings these
 //! handlers record (ADR-0006).
 
-use gputrace_core::HandleId;
+use gputrace_core::{ArgValue, HandleId};
 
 /// What a raw driver value names. Two kinds can hand out the same bit
 /// pattern, so the kind is part of what the id is derived from.
@@ -54,6 +54,12 @@ pub(crate) fn handle_id(kind: HandleKind, raw: u64) -> Option<HandleId> {
 /// that dropped it would lose exactly the edges it exists to find.
 pub(crate) fn stream_id(raw: u64) -> HandleId {
     HandleId(mix(raw ^ HandleKind::Stream.salt()))
+}
+
+/// A handle as a recorded argument: a handle an absent id names nothing, and
+/// a record says so rather than inventing one.
+pub(crate) fn handle_value(id: Option<HandleId>) -> ArgValue {
+    id.map_or(ArgValue::Null, ArgValue::Handle)
 }
 
 /// SplitMix64's finalizer: a bijection, so distinct inputs stay distinct.

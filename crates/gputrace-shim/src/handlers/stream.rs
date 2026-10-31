@@ -9,26 +9,15 @@
 //! a role binding alone could not say which of two consumed handles was the
 //! stream.
 
-use std::ffi::{c_int, c_uint, c_void};
+use std::ffi::{c_int, c_uint};
 
-use gputrace_core::{ArgValue, Argument, HandleId};
+use gputrace_core::{ArgValue, Argument, EVENT_ARG, HandleId, STREAM_ARG};
 
+use crate::generated::cuda_types::{CUevent, CUstream};
 use crate::handlers::golden::{self, Settles};
-use crate::handlers::handles::{HandleKind, handle_id, stream_id};
+use crate::handlers::handles::{HandleKind, handle_id, handle_value, stream_id};
 use crate::recorder;
-use crate::shim::{CUDA_ERROR_NOT_FOUND, CUresult, DriverFn, RecordArg};
-
-const CUDA_SUCCESS: CUresult = 0;
-
-type CUstream = *mut c_void;
-type CUevent = *mut c_void;
-
-/// What a record calls the stream it is ordered in. The offline
-/// reconstruction finds a call's stream by this name, so every handler that
-/// touches one uses it.
-pub(crate) const STREAM_ARG: &str = "hStream";
-/// What a record calls the event it records or waits on.
-pub(crate) const EVENT_ARG: &str = "hEvent";
+use crate::shim::{CUDA_ERROR_NOT_FOUND, CUDA_SUCCESS, CUresult, DriverFn, RecordArg};
 
 pub(crate) fn stream_arg(stream: CUstream) -> Argument {
     Argument::new(STREAM_ARG, ArgValue::Handle(stream_of(stream)))
@@ -39,13 +28,7 @@ pub(crate) fn stream_of(stream: CUstream) -> HandleId {
 }
 
 fn event_arg(event: CUevent) -> Argument {
-    Argument::new(
-        EVENT_ARG,
-        match event_of(event) {
-            Some(id) => ArgValue::Handle(id),
-            None => ArgValue::Null,
-        },
-    )
+    Argument::new(EVENT_ARG, handle_value(event_of(event)))
 }
 
 fn event_of(event: CUevent) -> Option<HandleId> {

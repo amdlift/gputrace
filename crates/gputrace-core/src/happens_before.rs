@@ -17,13 +17,7 @@
 use std::collections::HashMap;
 
 use crate::bundle::{Result, TraceBundle};
-use crate::trace::{ArgValue, Argument, CallRecord, HandleId, ThreadId};
-
-/// What a stream or event call is named in a record. The handlers in the
-/// interposer record CUDA's own spelling, and the reconstruction finds a
-/// call's stream and event by it.
-const STREAM_ARG: &str = "hStream";
-const EVENT_ARG: &str = "hEvent";
+use crate::trace::{ArgValue, Argument, CallRecord, EVENT_ARG, HandleId, STREAM_ARG, ThreadId};
 
 /// One operation's place in the order. An index into [`HappensBefore::ops`],
 /// which is in the order the host issued the operations.

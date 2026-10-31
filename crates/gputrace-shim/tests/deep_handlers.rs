@@ -115,7 +115,7 @@ fn a_host_to_device_copy_carries_its_payload_into_the_blob_store() {
     let copy = record(&records(&bundle), "cuMemcpyHtoD_v2");
     let (blob, len) = payload(&copy, "host_to_device");
     assert_eq!(len, SENT.len() as u64);
-    assert_eq!(bundle.read_blob(&blob).expect("blob"), SENT);
+    assert_eq!(bundle.blobs().get(&blob).expect("blob"), SENT);
 }
 
 /// What `alloc_copy` prints: the bytes it read back off the device. Asserting
@@ -146,7 +146,7 @@ fn a_golden_capture_stores_what_the_device_sent_back() {
     let (blob, len) = payload(&copy, "golden_output");
     let read_back = reported_output(&run);
     assert_eq!(len, read_back.len() as u64);
-    assert_eq!(bundle.read_blob(&blob).expect("blob"), read_back);
+    assert_eq!(bundle.blobs().get(&blob).expect("blob"), read_back);
 }
 
 #[test]
@@ -293,7 +293,7 @@ fn identical_payloads_are_stored_once_however_many_threads_sent_them() {
         shared_blobs.iter().all(|sent| *sent == (blob.clone(), len)),
         "four threads sent the same 16 bytes: {shared_blobs:?}"
     );
-    assert_eq!(bundle.read_blob(&blob).expect("blob"), [0xa5u8; 16]);
+    assert_eq!(bundle.blobs().get(&blob).expect("blob"), [0xa5u8; 16]);
 
     let private_blobs: HashSet<BlobId> = blobs_of(private)
         .into_iter()
@@ -407,7 +407,7 @@ fn an_older_spelling_of_a_call_records_exactly_as_the_current_one_does() {
         assert_eq!(bound(&copy, HandleRole::Consumed), allocation);
         let (blob, len) = payload(&copy, "host_to_device");
         assert_eq!(len, 16);
-        assert_eq!(bundle.read_blob(&blob).expect("blob"), [0x5au8; 16]);
+        assert_eq!(bundle.blobs().get(&blob).expect("blob"), [0x5au8; 16]);
     }
 
     let context = bound(&record(&records, "cuCtxCreate_v2"), HandleRole::Produced);
@@ -432,7 +432,7 @@ fn every_spelling_of_a_read_back_yields_the_same_golden_value() {
         assert_eq!(bound(&read_back, HandleRole::Consumed), allocation);
         let (blob, len) = payload(&read_back, "golden_output");
         assert_eq!(len, 16);
-        assert_eq!(bundle.read_blob(&blob).expect("blob"), [0x5au8; 16]);
+        assert_eq!(bundle.blobs().get(&blob).expect("blob"), [0x5au8; 16]);
     }
 }
 
@@ -584,7 +584,7 @@ fn assert_cross_stream_edge(run: &CaptureRun, copy: &str, event_record: &str, wa
         .filter(|record| record.function == copy)
         .map(|record| {
             let (blob, len) = payload(record, "host_to_device");
-            let sent = bundle.read_blob(&blob).expect("blob");
+            let sent = bundle.blobs().get(&blob).expect("blob");
             assert_eq!(len as usize, sent.len());
             let op = order
                 .ops()
@@ -639,7 +639,7 @@ fn a_loaded_module_image_is_captured_as_a_blob_the_load_record_names() {
     let load = record(&records, "cuModuleLoadData");
     let (blob, len) = payload(&load, "module_image");
     assert_eq!(len, PTX.len() as u64);
-    assert_eq!(bundle.read_blob(&blob).expect("blob"), PTX);
+    assert_eq!(bundle.blobs().get(&blob).expect("blob"), PTX);
 }
 
 /// A kernel is reached by name through the module that defines it, and the
@@ -732,7 +732,7 @@ fn a_launch_packed_through_extra_carries_its_parameter_buffer() {
     let launch = nth(&records(&bundle), "cuLaunchKernel", 0);
     let (blob, len) = payload(&launch, "kernel_params");
     assert_eq!(len, PACKED.len() as u64);
-    assert_eq!(bundle.read_blob(&blob).expect("blob"), PACKED);
+    assert_eq!(bundle.blobs().get(&blob).expect("blob"), PACKED);
 }
 
 /// `kernelParams` is a bare `void**`: no count, no element sizes, nothing

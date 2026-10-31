@@ -208,7 +208,6 @@ impl BundleWriter {
         &self.root
     }
 
-    /// The payload store shared by every segment writer in this bundle.
     pub fn blobs(&self) -> &BlobStore {
         &self.blobs
     }
@@ -340,10 +339,6 @@ impl TraceBundle {
 
     pub fn blobs(&self) -> &BlobStore {
         &self.blobs
-    }
-
-    pub fn read_blob(&self, id: &BlobId) -> Result<Vec<u8>> {
-        self.blobs.get(id)
     }
 
     pub fn threads(&self) -> &[ThreadSummary] {

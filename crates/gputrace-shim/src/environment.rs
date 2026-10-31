@@ -3,7 +3,7 @@
 //! Every question here goes to the backing library through [`crate::real`],
 //! never through this interposer's own exported `cu*`. A shimmed query would
 //! append a record the target never made, and a trace whose own probes cannot
-//! be told apart from the target's calls is not a recording of the target.
+//! be told apart from the target's calls is not a trace of the target.
 //!
 //! An unanswerable question is answered `None`. A manifest that invented a
 //! driver version would be worse than one that admits it does not know, since
@@ -14,8 +14,7 @@ use std::ffi::c_int;
 use gputrace_core::ComputeCapability;
 
 use crate::real::real_symbol;
-
-const CUDA_SUCCESS: c_int = 0;
+use crate::shim::CUDA_SUCCESS;
 
 /// `CUdevice_attribute`, transcribed from `cuda.h`.
 const COMPUTE_CAPABILITY_MAJOR: c_int = 75;

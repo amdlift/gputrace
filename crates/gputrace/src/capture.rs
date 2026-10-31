@@ -1,9 +1,9 @@
 //! The `capture` subcommand: run a target under the interposer.
 //!
-//! The wrapper only arranges the target's environment and then becomes the
-//! target, so the target's streams and exit status are its own. The bundle is
-//! written from inside the target process by the interposer, which is why
-//! nothing here waits for a child.
+//! The subcommand only arranges the target's environment and then becomes
+//! the target, so the target's streams and exit status are its own. The
+//! bundle is written from inside the target process by the interposer, which
+//! is why nothing here waits for a child.
 
 use std::convert::Infallible;
 use std::env;

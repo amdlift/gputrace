@@ -1,4 +1,4 @@
-//! `gputrace capture` end to end: the wrapper runs a target under the
+//! `gputrace capture` end to end: the subcommand runs a target under the
 //! interposer, the bundle lands in `--out`, and the target is undisturbed.
 
 use std::process::{Command, Output};
@@ -43,7 +43,7 @@ fn capture_records_the_targets_driver_calls_into_the_out_directory() {
 }
 
 #[test]
-fn the_targets_output_and_exit_status_pass_through_the_wrapper() {
+fn the_targets_output_and_exit_status_pass_through_capture() {
     let out = TempDir::new().expect("tempdir");
     let run = capture(&out, &["7"], &[]);
 

@@ -78,7 +78,6 @@ struct Lifetime {
 }
 
 impl Lifetime {
-    /// Whether the trace rules this lifetime out for a call at `site`.
     fn excludes(&self, site: CallSite) -> bool {
         self.produced
             .is_some_and(|produced| site.provably_before(produced))

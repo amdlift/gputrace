@@ -17,14 +17,11 @@ use std::sync::{LazyLock, RwLock};
 
 use gputrace_core::{ArgValue, Argument, HandleId};
 
+use crate::generated::cuda_types::CUcontext;
 use crate::handlers::golden::{self, Settles};
-use crate::handlers::handles::{HandleKind, handle_id};
+use crate::handlers::handles::{HandleKind, handle_id, handle_value};
 use crate::recorder;
-use crate::shim::{CUDA_ERROR_NOT_FOUND, CUresult, DriverFn, RecordArg};
-
-const CUDA_SUCCESS: CUresult = 0;
-
-type CUcontext = *mut c_void;
+use crate::shim::{CUDA_ERROR_NOT_FOUND, CUDA_SUCCESS, CUresult, DriverFn, RecordArg};
 
 /// Which device each live context belongs to.
 ///
@@ -59,16 +56,10 @@ fn device_of(context: u64) -> Option<u32> {
     CONTEXT_DEVICES.read().ok()?.get(&context).copied()
 }
 
+/// A context handle is an opaque address with no meaning to a replay; its id
+/// is the whole of what the record can say.
 fn context_arg(context: u64) -> Argument {
-    Argument::new(
-        "ctx",
-        match handle_id(HandleKind::Context, context) {
-            // A context handle is an opaque address with no meaning to a
-            // replay; its id is the whole of what the record can say.
-            Some(id) => ArgValue::Handle(id),
-            None => ArgValue::Null,
-        },
-    )
+    Argument::new("ctx", handle_value(context_id(context)))
 }
 
 fn context_id(context: u64) -> Option<HandleId> {
@@ -292,5 +283,5 @@ report_shims! {
 
 context_sync_shims! {
     cuCtxSynchronize();
-    cuCtxSynchronize_v2(ctx: *mut c_void);
+    cuCtxSynchronize_v2(ctx: CUcontext);
 }
