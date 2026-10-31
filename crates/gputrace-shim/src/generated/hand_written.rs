@@ -33,6 +33,23 @@ macro_rules! pass_through {
     (fn cuMemcpyHtoD $($rest:tt)*) => {};
     (fn cuMemcpyHtoD_v2 $($rest:tt)*) => {};
     (fn cuMemcpyHtoD_v2_ptds $($rest:tt)*) => {};
+    // ── Hand-written: `handlers/stream.rs` ──
+    (fn cuStreamCreate $($rest:tt)*) => {};
+    (fn cuStreamCreateWithPriority $($rest:tt)*) => {};
+    (fn cuStreamDestroy $($rest:tt)*) => {};
+    (fn cuStreamDestroy_v2 $($rest:tt)*) => {};
+    (fn cuStreamSynchronize $($rest:tt)*) => {};
+    (fn cuStreamSynchronize_ptsz $($rest:tt)*) => {};
+    (fn cuStreamWaitEvent $($rest:tt)*) => {};
+    (fn cuStreamWaitEvent_ptsz $($rest:tt)*) => {};
+    (fn cuEventCreate $($rest:tt)*) => {};
+    (fn cuEventDestroy $($rest:tt)*) => {};
+    (fn cuEventDestroy_v2 $($rest:tt)*) => {};
+    (fn cuEventRecord $($rest:tt)*) => {};
+    (fn cuEventRecord_ptsz $($rest:tt)*) => {};
+    (fn cuEventRecordWithFlags $($rest:tt)*) => {};
+    (fn cuEventRecordWithFlags_ptsz $($rest:tt)*) => {};
+    (fn cuEventSynchronize $($rest:tt)*) => {};
     // ── Hand-written: `dispatch.rs` ──
     (fn cuGetProcAddress $($rest:tt)*) => {};
     (fn cuGetProcAddress_v2 $($rest:tt)*) => {};

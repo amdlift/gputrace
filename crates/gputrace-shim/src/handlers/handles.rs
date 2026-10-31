@@ -14,6 +14,10 @@ use gputrace_core::HandleId;
 pub(crate) enum HandleKind {
     Context,
     DevicePtr,
+    Module,
+    Function,
+    Stream,
+    Event,
 }
 
 impl HandleKind {
@@ -23,6 +27,10 @@ impl HandleKind {
         match self {
             Self::Context => 0x9e37_79b9_7f4a_7c15,
             Self::DevicePtr => 0xc2b2_ae3d_27d4_eb4f,
+            Self::Module => 0x165_667b_19e3_779f,
+            Self::Function => 0xd6e8_feb8_6659_fd93,
+            Self::Stream => 0xa076_1d64_78bd_642f,
+            Self::Event => 0xe703_7ed1_a0b4_28db,
         }
     }
 }
@@ -31,6 +39,16 @@ impl HandleKind {
 /// context or a null device pointer is an absence, not a handle.
 pub(crate) fn handle_id(kind: HandleKind, raw: u64) -> Option<HandleId> {
     (raw != 0).then(|| HandleId(mix(raw ^ kind.salt())))
+}
+
+/// The id standing for a stream, including the null handle.
+///
+/// Every other kind reads a null handle as an absence, but CUDA's legacy
+/// default stream *is* the null handle: work issued into it is ordered
+/// against work in every other stream, so a happens-before reconstruction
+/// that dropped it would lose exactly the edges it exists to find.
+pub(crate) fn stream_id(raw: u64) -> HandleId {
+    HandleId(mix(raw ^ HandleKind::Stream.salt()))
 }
 
 /// SplitMix64's finalizer: a bijection, so distinct inputs stay distinct.
@@ -44,7 +62,7 @@ fn mix(mut value: u64) -> u64 {
 mod tests {
     use std::collections::HashSet;
 
-    use super::{HandleKind, handle_id};
+    use super::{HandleKind, handle_id, stream_id};
 
     /// The stub driver's sequences: handles from `0x10000` stride `0x100`,
     /// device pointers from `0x10000000` on a 4 KiB granularity.
@@ -91,6 +109,37 @@ mod tests {
     fn a_null_handle_names_nothing() {
         assert_eq!(handle_id(HandleKind::Context, 0), None);
         assert_eq!(handle_id(HandleKind::DevicePtr, 0), None);
+    }
+
+    /// The stub hands modules, functions, streams and events out of one
+    /// handle sequence, so the same raw value names four different objects
+    /// across a run.
+    #[test]
+    fn every_kind_of_handle_keeps_one_raw_value_apart() {
+        let kinds = [
+            HandleKind::Context,
+            HandleKind::DevicePtr,
+            HandleKind::Module,
+            HandleKind::Function,
+            HandleKind::Stream,
+            HandleKind::Event,
+        ];
+        let ids: HashSet<_> = kinds
+            .iter()
+            .map(|&kind| handle_id(kind, 0x1_0000))
+            .collect();
+        assert_eq!(ids.len(), kinds.len());
+    }
+
+    #[test]
+    fn the_default_stream_is_a_stream_and_not_an_absence() {
+        assert_eq!(handle_id(HandleKind::Stream, 0), None);
+        assert_eq!(stream_id(0), stream_id(0));
+        assert_ne!(stream_id(0), stream_id(0x1_0000));
+        assert_eq!(
+            Some(stream_id(0x1_0000)),
+            handle_id(HandleKind::Stream, 0x1_0000)
+        );
     }
 
     /// The identity rule capture depends on: a pointer allocated on one

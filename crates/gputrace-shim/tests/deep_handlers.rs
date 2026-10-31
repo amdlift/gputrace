@@ -360,3 +360,107 @@ fn an_older_spelling_of_a_call_records_exactly_as_the_current_one_does() {
     );
     assert_ne!(context, allocation);
 }
+
+/// What a stream/event fixture prints: the raw handle behind a label.
+fn reported(run: &CaptureRun, label: &str) -> u64 {
+    let line = run
+        .stdout()
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{label}=")))
+        .unwrap_or_else(|| panic!("the fixture reports {label}"));
+    u64::from_str_radix(line.trim_start_matches("0x"), 16).expect("handle")
+}
+
+fn handle_arg(record: &CallRecord, name: &str) -> HandleId {
+    match arg(record, name) {
+        ArgValue::Handle(id) => id,
+        other => panic!(
+            "{} records {name} as {other:?}, not a handle",
+            record.function
+        ),
+    }
+}
+
+fn bound_all(record: &CallRecord, role: HandleRole) -> HashSet<HandleId> {
+    record
+        .handles
+        .iter()
+        .filter(|binding| binding.role == role)
+        .map(|binding| binding.id)
+        .collect()
+}
+
+fn nth(records: &[CallRecord], function: &str, index: usize) -> CallRecord {
+    records
+        .iter()
+        .filter(|record| record.function == function)
+        .nth(index)
+        .unwrap_or_else(|| panic!("no {index}th {function} record"))
+        .clone()
+}
+
+/// Streams and events are the handles the happens-before order is made of:
+/// every call that touches one has to name it, or the edge between two
+/// streams cannot be found again offline.
+#[test]
+fn every_stream_and_event_call_names_the_handles_it_relates() {
+    let run = run("stream_event");
+    let (producer, consumer) = (reported(&run, "producer"), reported(&run, "consumer"));
+    let bundle = run.bundle().expect("bundle");
+    let records = records(&bundle);
+
+    let created = |index| {
+        let create = nth(&records, "cuStreamCreate", index);
+        let id = handle_arg(&create, "hStream");
+        assert_eq!(
+            bound_all(&create, HandleRole::Produced),
+            HashSet::from([id])
+        );
+        id
+    };
+    let (produced, consumed) = (created(0), created(1));
+    assert_ne!(produced, consumed, "{producer:#x} and {consumer:#x}");
+
+    let start = handle_arg(&nth(&records, "cuEventCreate", 0), "hEvent");
+    let finish = handle_arg(&nth(&records, "cuEventCreate", 1), "hEvent");
+    assert_ne!(start, finish);
+
+    let record_start = nth(&records, "cuEventRecord", 0);
+    assert_eq!(handle_arg(&record_start, "hEvent"), start);
+    assert_eq!(handle_arg(&record_start, "hStream"), produced);
+    assert_eq!(
+        bound_all(&record_start, HandleRole::Consumed),
+        HashSet::from([start, produced])
+    );
+
+    let wait = record(&records, "cuStreamWaitEvent");
+    assert_eq!(handle_arg(&wait, "hStream"), consumed);
+    assert_eq!(handle_arg(&wait, "hEvent"), start);
+    assert_eq!(
+        bound_all(&wait, HandleRole::Consumed),
+        HashSet::from([start, consumed])
+    );
+
+    assert_eq!(
+        handle_arg(&nth(&records, "cuStreamSynchronize", 0), "hStream"),
+        produced
+    );
+    assert_eq!(
+        handle_arg(&record(&records, "cuEventSynchronize"), "hEvent"),
+        finish
+    );
+    assert_eq!(
+        bound_all(
+            &record(&records, "cuEventDestroy_v2"),
+            HandleRole::Destroyed
+        ),
+        HashSet::from([finish])
+    );
+    assert_eq!(
+        bound_all(
+            &record(&records, "cuStreamDestroy_v2"),
+            HandleRole::Destroyed
+        ),
+        HashSet::from([consumed])
+    );
+}
