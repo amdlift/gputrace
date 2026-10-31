@@ -17,6 +17,7 @@ mod launch;
 mod log;
 mod memory;
 mod module;
+mod procaddr;
 mod state;
 mod stream;
 mod types;

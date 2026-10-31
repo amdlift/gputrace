@@ -139,3 +139,38 @@ fn the_stub_orders_events_across_streams() {
         ]
     );
 }
+
+#[test]
+fn the_stub_serves_the_dispatch_table() {
+    let harness = Harness::new().expect("harness");
+    let run = harness
+        .run(target_bin("proc_address"), &[])
+        .expect("run target");
+
+    assert!(run.status().success(), "target failed: {}", run.stderr());
+    assert_eq!(
+        run.stdout(),
+        concat!(
+            "lookup=0 status=0\n",
+            "devices=1\n",
+            "mem_alloc_is_v2=true\n",
+            "per_thread_default_stream=true\n",
+            "missing=500 status=1 null=true\n",
+            "too_old=500 status=2\n",
+            "v1=0 agrees=true\n",
+        )
+    );
+    assert_eq!(
+        run.stub_calls(),
+        [
+            "cuInit",
+            "cuGetProcAddress_v2",
+            "cuDeviceGetCount",
+            "cuGetProcAddress_v2",
+            "cuGetProcAddress_v2",
+            "cuGetProcAddress_v2",
+            "cuGetProcAddress_v2",
+            "cuGetProcAddress",
+        ]
+    );
+}
