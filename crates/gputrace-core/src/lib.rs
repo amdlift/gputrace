@@ -4,6 +4,7 @@
 
 pub mod backend;
 pub mod bundle;
+pub mod happens_before;
 pub mod trace;
 
 pub use backend::Backend;
@@ -11,6 +12,7 @@ pub use bundle::{
     BlobStore, BundleError, BundleWriter, CaptureConfig, Manifest, SCHEMA_VERSION, SegmentWriter,
     ThreadSummary, TraceBundle,
 };
+pub use happens_before::HappensBefore;
 pub use trace::{
     ArgValue, Argument, BlobId, CallRecord, Fidelity, HandleBinding, HandleId, HandleRole,
     PayloadRef, ThreadId,
