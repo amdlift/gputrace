@@ -1,7 +1,7 @@
 //! End-to-end capture: a target runs under the interposer with the stub
 //! driver behind it, and the trace bundle is read back and asserted on.
 
-use gputrace_core::{ArgValue, CallRecord, TraceBundle};
+use gputrace_core::{ArgValue, CallRecord, Fidelity, TraceBundle};
 use gputrace_testkit::{Harness, target_bin};
 
 fn records(bundle: &TraceBundle) -> Vec<CallRecord> {
@@ -128,5 +128,90 @@ fn every_host_thread_gets_its_own_segment_and_its_own_sequence() {
     assert_eq!(
         run.stub_call_count("cuDriverGetVersion"),
         THREADS * CALLS_PER_THREAD
+    );
+}
+
+#[test]
+fn the_manifest_names_what_was_captured() {
+    let harness = Harness::new().expect("harness");
+    let run = harness
+        .run(target_bin("stub_smoke"), &[])
+        .expect("run target");
+    assert!(run.status().success(), "target failed: {}", run.stderr());
+
+    let bundle = run.bundle().expect("bundle");
+    let manifest = bundle.manifest();
+    assert_eq!(manifest.schema_version, gputrace_core::SCHEMA_VERSION);
+    assert_eq!(manifest.capture.backend, "cuda");
+    assert_eq!(manifest.capture.fidelity, Fidelity::Metadata);
+    assert_eq!(
+        manifest.capture.command.first().map(String::as_str),
+        target_bin("stub_smoke").to_str()
+    );
+    assert_eq!(
+        manifest.threads.iter().map(|t| t.records).sum::<u64>(),
+        2,
+        "one summary row per thread, counting that thread's records"
+    );
+}
+
+#[test]
+fn an_interposer_with_nowhere_to_write_is_a_pass_through() {
+    let harness = Harness::new()
+        .expect("harness")
+        .with_env("GPUTRACE_OUT", "");
+    let run = harness
+        .run(target_bin("stub_smoke"), &[])
+        .expect("run target");
+
+    assert!(run.status().success(), "target failed: {}", run.stderr());
+    assert_eq!(
+        run.stdout(),
+        "driver=13040\ndevices=1\nname=gputrace-stub-device-0\n"
+    );
+    assert_eq!(run.stub_calls().len(), 4);
+    assert!(
+        run.bundle().is_err(),
+        "no bundle directory should have been created"
+    );
+}
+
+#[test]
+fn golden_fidelity_is_recorded_in_the_manifest() {
+    let harness = Harness::new()
+        .expect("harness")
+        .with_env("GPUTRACE_FIDELITY", "golden");
+    let run = harness
+        .run(target_bin("stub_smoke"), &[])
+        .expect("run target");
+    assert!(run.status().success(), "target failed: {}", run.stderr());
+
+    assert_eq!(
+        run.bundle().expect("bundle").manifest().capture.fidelity,
+        Fidelity::Golden
+    );
+}
+
+#[test]
+fn a_shim_whose_entry_point_the_driver_lacks_reports_it_and_records_it() {
+    let harness = Harness::new()
+        .expect("harness")
+        // A real library that exports no `cu*` at all, standing in for a
+        // driver older than the surface the interposer was built against.
+        .with_env("GPUTRACE_LIBCUDA", "libc.so.6");
+    let run = harness
+        .run(target_bin("absent_entry_point"), &[])
+        .expect("run target");
+
+    assert!(run.status().success(), "target failed: {}", run.stderr());
+    assert_eq!(run.stdout(), "init=500\nversion=500\nread=-1\n");
+    assert!(run.stub_calls().is_empty(), "nothing reached the stub");
+
+    let bundle = run.bundle().expect("bundle");
+    let results: Vec<i32> = records(&bundle).iter().map(|r| r.result).collect();
+    assert_eq!(
+        results,
+        [500, 500],
+        "a failed call is still a recorded call"
     );
 }
