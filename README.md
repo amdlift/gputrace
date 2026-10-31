@@ -211,4 +211,4 @@ Decisions that constrain future work belong in an ADR under `docs/adr/`, and new
 
 ## License
 
-MIT.
+MIT — see [LICENSE](LICENSE).
