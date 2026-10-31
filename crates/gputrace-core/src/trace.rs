@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 /// How much is recorded per intercepted call. Capture defaults to
 /// [`Fidelity::Replayable`]; [`Fidelity::Golden`] is opt-in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Fidelity {
     /// Function, thread, ordering stamps, scalar args, return value.
     Metadata,

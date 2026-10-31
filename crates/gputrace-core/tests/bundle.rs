@@ -132,3 +132,40 @@ fn identical_payloads_dedup_to_one_content_addressed_blob() {
     assert_eq!(bundle.read_blob(&first).unwrap(), b"h2d payload");
     assert_eq!(bundle.read_blob(&other).unwrap(), b"ptx module image");
 }
+
+#[test]
+fn manifest_is_human_readable_json_carrying_a_schema_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("trace");
+
+    let writer = BundleWriter::create(
+        &root,
+        CaptureConfig {
+            backend: "cuda".into(),
+            fidelity: Fidelity::Golden,
+            device: Some(0),
+            command: vec!["./vecadd".into()],
+        },
+    )
+    .unwrap();
+    let mut segment = writer.open_segment(ThreadId(42)).unwrap();
+    segment.write(&CallRecord::new("cuInit", 0, 1, 0)).unwrap();
+    segment.finish().unwrap();
+    writer.finish().unwrap();
+
+    let text = std::fs::read_to_string(root.join("manifest.json")).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+
+    assert_eq!(json["schema_version"], SCHEMA_VERSION);
+    assert_eq!(json["capture"]["backend"], "cuda");
+    assert_eq!(json["capture"]["fidelity"], "golden");
+    assert_eq!(json["capture"]["device"], 0);
+    assert_eq!(json["threads"][0]["thread"], 42);
+    assert_eq!(json["threads"][0]["records"], 1);
+    assert_eq!(json["threads"][0]["segment"], "segments/thread-42.seg");
+
+    assert!(
+        text.contains("\n  \"schema_version\""),
+        "manifest should be indented for reading by hand:\n{text}"
+    );
+}
