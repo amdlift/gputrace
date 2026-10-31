@@ -3,7 +3,7 @@
 //! a single-threaded target sees identical values on every run.
 
 use std::cell::Cell;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::c_void;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
@@ -18,12 +18,32 @@ pub struct State {
     pub initialized: bool,
     pub contexts: HashSet<usize>,
     pub allocations: BTreeMap<CUdeviceptr, Vec<u8>>,
+    pub modules: HashMap<usize, Module>,
+    pub functions: HashMap<usize, usize>,
     next_handle: usize,
     next_device_ptr: CUdeviceptr,
 }
 
 thread_local! {
     static CURRENT_CONTEXT: Cell<usize> = const { Cell::new(0) };
+}
+
+#[derive(Default)]
+pub struct Module {
+    pub image: Vec<u8>,
+    pub functions: HashMap<String, usize>,
+}
+
+impl Module {
+    /// PTX declares each kernel with a `.entry` directive, so the stub can
+    /// honestly answer `CUDA_ERROR_NOT_FOUND` for a name the image never
+    /// defines instead of inventing a handle for anything asked of it.
+    pub fn defines(&self, name: &str) -> bool {
+        let needle = format!(".entry {name}");
+        self.image
+            .windows(needle.len())
+            .any(|window| window == needle.as_bytes())
+    }
 }
 
 impl State {
@@ -56,6 +76,8 @@ impl Default for State {
             initialized: false,
             contexts: HashSet::new(),
             allocations: BTreeMap::new(),
+            modules: HashMap::new(),
+            functions: HashMap::new(),
             next_handle: FIRST_HANDLE,
             next_device_ptr: FIRST_DEVICE_PTR,
         }

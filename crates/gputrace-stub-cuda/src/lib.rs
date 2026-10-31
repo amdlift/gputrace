@@ -12,8 +12,10 @@
 mod context;
 mod device;
 mod init;
+mod launch;
 mod log;
 mod memory;
+mod module;
 mod state;
 mod types;
 

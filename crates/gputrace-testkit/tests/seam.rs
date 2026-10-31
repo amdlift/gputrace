@@ -58,3 +58,41 @@ fn the_stub_round_trips_a_copy_through_device_memory() {
         ]
     );
 }
+
+#[test]
+fn the_stub_binds_kernels_to_the_module_that_defines_them() {
+    let harness = Harness::new().expect("harness");
+    let run = harness
+        .run(target_bin("module_launch"), &[])
+        .expect("run target");
+
+    assert!(run.status().success(), "target failed: {}", run.stderr());
+    assert_eq!(
+        run.stdout(),
+        concat!(
+            "module=0x10100\n",
+            "kernel_a=0x10200\n",
+            "kernel_a_again=0x10200\n",
+            "kernel_b=0x10300\n",
+            "absent=500\n",
+            "launch=0\n",
+            "launch_after_unload=400\n",
+        )
+    );
+    assert_eq!(
+        run.stub_calls(),
+        [
+            "cuInit",
+            "cuDeviceGet",
+            "cuCtxCreate_v4",
+            "cuModuleLoadData",
+            "cuModuleGetFunction",
+            "cuModuleGetFunction",
+            "cuModuleGetFunction",
+            "cuModuleGetFunction",
+            "cuLaunchKernel",
+            "cuModuleUnload",
+            "cuLaunchKernel",
+        ]
+    );
+}
