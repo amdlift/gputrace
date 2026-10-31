@@ -2,6 +2,7 @@
 //! `cuda.h`. The stub deliberately depends on no CUDA headers or crates.
 
 use std::ffi::{c_int, c_uint, c_void};
+use std::sync::OnceLock;
 
 pub type CUresult = c_int;
 pub type CUdevice = c_int;
@@ -35,5 +36,30 @@ pub const CU_GET_PROC_ADDRESS_VERSION_NOT_SUFFICIENT: c_int = 2;
 pub const STUB_DRIVER_VERSION: c_int = 13040;
 pub const STUB_DEVICE_NAME: &str = "gputrace-stub-device-0";
 pub const STUB_DEVICE_COUNT: c_int = 1;
+/// Names how many devices the stub presents, for a test that needs more than
+/// one GPU in a process. Unset means [`STUB_DEVICE_COUNT`], so every fixture
+/// that does not ask sees exactly the single-device driver it always saw.
+pub const STUB_DEVICES_ENV: &str = "GPUTRACE_STUB_DEVICES";
 pub const STUB_DEVICE_TOTAL_MEM: usize = 8 << 30;
 pub const STUB_COMPUTE_CAPABILITY: (c_int, c_int) = (8, 6);
+
+/// How many devices this process's stub presents, read once.
+pub fn device_count() -> c_int {
+    static COUNT: OnceLock<c_int> = OnceLock::new();
+    *COUNT.get_or_init(|| {
+        std::env::var(STUB_DEVICES_ENV)
+            .ok()
+            .and_then(|count| count.parse().ok())
+            .filter(|count| *count >= 1)
+            .unwrap_or(STUB_DEVICE_COUNT)
+    })
+}
+
+pub fn device_exists(dev: CUdevice) -> bool {
+    (0..device_count()).contains(&dev)
+}
+
+/// Device 0 keeps the name single-device fixtures already assert on.
+pub fn device_name(dev: CUdevice) -> String {
+    format!("gputrace-stub-device-{dev}")
+}

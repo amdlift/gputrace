@@ -274,3 +274,72 @@ mod record_path {
         }
     }
 }
+
+#[test]
+fn a_two_device_run_is_distinguishable_in_the_bundle() {
+    const DEVICES: usize = 2;
+    const CALLS_PER_THREAD: usize = 300;
+
+    let harness = Harness::new()
+        .expect("harness")
+        .with_env("GPUTRACE_STUB_DEVICES", "2");
+    let run = harness
+        .run(target_bin("capture_devices"), &[])
+        .expect("run target");
+    assert!(run.status().success(), "target failed: {}", run.stderr());
+
+    let mut reported = run.stdout().lines();
+    assert_eq!(reported.next(), Some("devices=2"));
+    let devices: HashMap<u64, u32> = reported
+        .map(|line| {
+            let (tid, device) = line.split_once(' ').expect("tid and device");
+            (
+                tid.trim_start_matches("tid=").parse().expect("tid"),
+                device
+                    .trim_start_matches("device=")
+                    .parse()
+                    .expect("device"),
+            )
+        })
+        .collect();
+    assert_eq!(devices.len(), DEVICES, "{}", run.stdout());
+
+    let bundle = run.bundle().expect("bundle");
+    let mut tagged = Vec::new();
+    for (thread, records) in segments(&bundle) {
+        let Some(&device) = devices.get(&thread.0) else {
+            assert!(
+                records.iter().all(|record| record.device.is_none()),
+                "the main thread holds no context, so it targets no device"
+            );
+            continue;
+        };
+        tagged.push(device);
+
+        assert_eq!(records.len(), CALLS_PER_THREAD + 2, "{thread:?}");
+        assert_eq!(
+            records.first().map(|record| record.function.as_str()),
+            Some("cuCtxCreate_v4")
+        );
+        assert_eq!(
+            records.last().map(|record| record.function.as_str()),
+            Some("cuCtxDestroy_v2")
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record.device == Some(device))
+                .count(),
+            records.len(),
+            "every call this thread made targeted device {device}, including \
+             the ones that name no device themselves"
+        );
+    }
+
+    tagged.sort_unstable();
+    assert_eq!(
+        tagged,
+        [0, 1],
+        "the two GPUs must be distinguishable from the bundle alone"
+    );
+}

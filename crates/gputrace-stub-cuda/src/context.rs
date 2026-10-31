@@ -10,11 +10,11 @@ fn create(device: CUdevice, pctx: *mut CUcontext) -> CUresult {
     if !state.initialized {
         return CUDA_ERROR_NOT_INITIALIZED;
     }
-    if !(0..STUB_DEVICE_COUNT).contains(&device) {
+    if !device_exists(device) {
         return CUDA_ERROR_INVALID_DEVICE;
     }
     let handle = state.fresh_handle();
-    state.contexts.insert(handle);
+    state.contexts.insert(handle, device);
     drop(state);
 
     if !unsafe { out(pctx, as_handle(handle)) } {
@@ -72,7 +72,7 @@ pub unsafe extern "C" fn cuCtxCreate_v4(
 
 fn destroy(ctx: CUcontext) -> CUresult {
     let handle = ctx as usize;
-    if !state().contexts.remove(&handle) {
+    if state().contexts.remove(&handle).is_none() {
         return CUDA_ERROR_INVALID_CONTEXT;
     }
     if current_context() == handle {
@@ -97,7 +97,7 @@ pub unsafe extern "C" fn cuCtxDestroy_v2(ctx: CUcontext) -> CUresult {
 pub unsafe extern "C" fn cuCtxSetCurrent(ctx: CUcontext) -> CUresult {
     note("cuCtxSetCurrent");
     let handle = ctx as usize;
-    if handle != 0 && !state().contexts.contains(&handle) {
+    if handle != 0 && !state().contexts.contains_key(&handle) {
         return CUDA_ERROR_INVALID_CONTEXT;
     }
     set_current_context(handle);
@@ -124,4 +124,18 @@ pub extern "C" fn cuCtxSynchronize() -> CUresult {
         return CUDA_ERROR_INVALID_CONTEXT;
     }
     CUDA_SUCCESS
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cuCtxGetDevice(device: *mut CUdevice) -> CUresult {
+    note("cuCtxGetDevice");
+    let handle = current_context();
+    let Some(&dev) = state().contexts.get(&handle) else {
+        return CUDA_ERROR_INVALID_CONTEXT;
+    };
+    if unsafe { out(device, dev) } {
+        CUDA_SUCCESS
+    } else {
+        CUDA_ERROR_INVALID_VALUE
+    }
 }

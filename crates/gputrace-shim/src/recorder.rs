@@ -22,7 +22,7 @@ use std::thread::{self, JoinHandle, Thread};
 use std::time::Duration;
 
 use gputrace_core::{
-    Argument, BundleWriter, CallRecord, CaptureConfig, Fidelity, SegmentWriter, ThreadId,
+    ArgValue, Argument, BundleWriter, CallRecord, CaptureConfig, Fidelity, SegmentWriter, ThreadId,
 };
 
 /// Names the directory the interposer writes its trace bundle to. Unset or
@@ -70,10 +70,13 @@ impl CallScope {
         let Some(stamp) = self.stamp else {
             return;
         };
-        let mut record =
-            CallRecord::new(stamp.function, stamp.thread_seq, stamp.timestamp_ns, result);
-        record.args = args;
-        with_local(move |local| local.push(record));
+        with_local(move |local| {
+            let mut record =
+                CallRecord::new(stamp.function, stamp.thread_seq, stamp.timestamp_ns, result);
+            record.device = local.target_device(stamp.function, &args);
+            record.args = args;
+            local.push(record);
+        });
     }
 }
 
@@ -355,10 +358,53 @@ fn fidelity() -> Fidelity {
     }
 }
 
+/// What one call says about the device it targeted. A call that names a
+/// device targets that one; everything else targets whatever its thread's
+/// current context does, which is how a device-agnostic call in a multi-GPU
+/// process is still attributable to a GPU.
+enum TargetDevice {
+    /// The call named a device and made it the calling thread's.
+    Bound(u32),
+    /// The call named a device without changing what its thread targets.
+    Named(u32),
+    /// The call ended the calling thread's context.
+    Released,
+    /// The call says nothing; it targets what its thread already did.
+    Inherited,
+}
+
+fn target_device(function: &str, args: &[Argument]) -> TargetDevice {
+    if function.starts_with("cuCtxDestroy") {
+        return TargetDevice::Released;
+    }
+    match named_device(args) {
+        Some(device) if binds_the_thread(function) => TargetDevice::Bound(device),
+        Some(device) => TargetDevice::Named(device),
+        None => TargetDevice::Inherited,
+    }
+}
+
+fn binds_the_thread(function: &str) -> bool {
+    function.starts_with("cuCtxCreate") || function.starts_with("cuDevicePrimaryCtxRetain")
+}
+
+/// The device ordinal a call passed by value. A `CUdevice` out-parameter is
+/// recorded as a pointer, so a call that only asks for a device never looks
+/// like one that targets it.
+fn named_device(args: &[Argument]) -> Option<u32> {
+    args.iter()
+        .find_map(|arg| match (arg.name.as_str(), &arg.value) {
+            ("dev" | "device", ArgValue::Signed(ordinal)) => u32::try_from(*ordinal).ok(),
+            ("dev" | "device", ArgValue::Unsigned(ordinal)) => u32::try_from(*ordinal).ok(),
+            _ => None,
+        })
+}
+
 struct Local {
     capture: &'static Capture,
     slot: Arc<Slot>,
     seq: u64,
+    device: Option<u32>,
 }
 
 impl Local {
@@ -368,7 +414,22 @@ impl Local {
             capture,
             slot: capture.register(ThreadId(current_thread_id())),
             seq: 0,
+            device: None,
         })
+    }
+
+    /// The device to tag this call with, updating what the thread targets
+    /// from here on. A teardown is still tagged with the device it ended.
+    fn target_device(&mut self, function: &str, args: &[Argument]) -> Option<u32> {
+        match target_device(function, args) {
+            TargetDevice::Bound(device) => {
+                self.device = Some(device);
+                Some(device)
+            }
+            TargetDevice::Named(device) => Some(device),
+            TargetDevice::Released => self.device.take(),
+            TargetDevice::Inherited => self.device,
+        }
     }
 
     fn next_seq(&mut self) -> u64 {
@@ -472,4 +533,70 @@ fn monotonic_ns() -> u64 {
         return 0;
     }
     now.tv_sec.unsigned_abs() * 1_000_000_000 + now.tv_nsec.unsigned_abs()
+}
+
+/// What a call says about its device decides a record's attribution in a
+/// multi-GPU process. The cases below are ones no shimmed entry point
+/// reaches yet, so they are pinned here rather than through the bundle.
+#[cfg(test)]
+mod target_device_tests {
+    use super::{TargetDevice, target_device};
+
+    use gputrace_core::{ArgValue, Argument};
+
+    fn by_value(name: &str, ordinal: i64) -> Vec<Argument> {
+        vec![Argument::new(name, ArgValue::Signed(ordinal))]
+    }
+
+    #[test]
+    fn a_query_names_its_device_without_rebinding_the_calling_thread() {
+        let args = by_value("dev", 1);
+        assert!(matches!(
+            target_device("cuDeviceGetAttribute", &args),
+            TargetDevice::Named(1)
+        ));
+    }
+
+    #[test]
+    fn creating_a_context_binds_the_thread_to_the_device_it_names() {
+        let args = by_value("dev", 1);
+        assert!(matches!(
+            target_device("cuCtxCreate_v4", &args),
+            TargetDevice::Bound(1)
+        ));
+        assert!(matches!(
+            target_device("cuDevicePrimaryCtxRetain", &args),
+            TargetDevice::Bound(1)
+        ));
+    }
+
+    #[test]
+    fn asking_for_a_device_handle_is_not_targeting_one() {
+        let args = vec![
+            Argument::new("device", ArgValue::HostPtr(0x7fff_0000)),
+            Argument::new("ordinal", ArgValue::Signed(1)),
+        ];
+        assert!(matches!(
+            target_device("cuDeviceGet", &args),
+            TargetDevice::Inherited
+        ));
+    }
+
+    #[test]
+    fn a_call_naming_no_device_targets_whatever_its_thread_does() {
+        let args = vec![Argument::new("flags", ArgValue::Unsigned(0))];
+        assert!(matches!(
+            target_device("cuInit", &args),
+            TargetDevice::Inherited
+        ));
+    }
+
+    #[test]
+    fn tearing_down_a_context_releases_the_binding_whatever_it_names() {
+        let args = vec![Argument::new("ctx", ArgValue::HostPtr(0x1_0000))];
+        assert!(matches!(
+            target_device("cuCtxDestroy_v2", &args),
+            TargetDevice::Released
+        ));
+    }
 }

@@ -100,6 +100,11 @@ pub struct CallRecord {
     pub args: Vec<Argument>,
     pub handles: Vec<HandleBinding>,
     pub payloads: Vec<PayloadRef>,
+    /// The device ordinal this call targeted: the one the call itself names,
+    /// else the one the calling thread's current context belongs to. `None`
+    /// when the call is device-agnostic or no context is current, which is
+    /// what keeps multi-GPU activity in one process distinguishable.
+    pub device: Option<u32>,
 }
 
 impl CallRecord {
