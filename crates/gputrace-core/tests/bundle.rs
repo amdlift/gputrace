@@ -201,6 +201,7 @@ fn records_carry_arguments_handle_bindings_and_payload_refs() {
             role: "h2d".into(),
             blob: blob.clone(),
             len: payload.len() as u64,
+            source: None,
         }],
         ..CallRecord::new("cuMemcpyHtoDAsync_v2", 5, 123_456, 0)
     };
@@ -246,11 +247,13 @@ fn many_threads_write_independent_segments_through_one_shared_blob_store() {
                                     role: "module_image".into(),
                                     blob: shared.clone(),
                                     len: 26,
+                                    source: None,
                                 },
                                 PayloadRef {
                                     role: "h2d".into(),
                                     blob: unique,
                                     len: 0,
+                                    source: None,
                                 },
                             ],
                             ..CallRecord::new("cuLaunchKernel", seq, seq, 0)

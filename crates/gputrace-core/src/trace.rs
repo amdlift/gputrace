@@ -86,6 +86,11 @@ pub struct PayloadRef {
     pub role: String,
     pub blob: BlobId,
     pub len: u64,
+    /// The device allocation these bytes mirror, when the call carrying the
+    /// payload is not the call that named it — a golden output taken at the
+    /// synchronization that finally made an asynchronous read-back valid.
+    #[serde(default)]
+    pub source: Option<HandleId>,
 }
 
 /// One intercepted call as written to a per-thread segment. Ordering is

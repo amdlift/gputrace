@@ -25,6 +25,8 @@ macro_rules! pass_through {
     (fn cuCtxPushCurrent $($rest:tt)*) => {};
     (fn cuCtxPushCurrent_v2 $($rest:tt)*) => {};
     (fn cuCtxSetCurrent $($rest:tt)*) => {};
+    (fn cuCtxSynchronize $($rest:tt)*) => {};
+    (fn cuCtxSynchronize_v2 $($rest:tt)*) => {};
     // ── Hand-written: `handlers/memory.rs` ──
     (fn cuMemAlloc $($rest:tt)*) => {};
     (fn cuMemAlloc_v2 $($rest:tt)*) => {};
@@ -43,6 +45,9 @@ macro_rules! pass_through {
     (fn cuMemcpyHtoDAsync $($rest:tt)*) => {};
     (fn cuMemcpyHtoDAsync_v2 $($rest:tt)*) => {};
     (fn cuMemcpyHtoDAsync_v2_ptsz $($rest:tt)*) => {};
+    (fn cuMemcpyDtoHAsync $($rest:tt)*) => {};
+    (fn cuMemcpyDtoHAsync_v2 $($rest:tt)*) => {};
+    (fn cuMemcpyDtoHAsync_v2_ptsz $($rest:tt)*) => {};
     // ── Hand-written: `handlers/launch.rs` ──
     (fn cuLaunchKernel $($rest:tt)*) => {};
     (fn cuLaunchKernel_ptsz $($rest:tt)*) => {};

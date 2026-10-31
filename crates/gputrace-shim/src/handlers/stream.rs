@@ -13,6 +13,7 @@ use std::ffi::{c_int, c_uint, c_void};
 
 use gputrace_core::{ArgValue, Argument, HandleId};
 
+use crate::handlers::golden::{self, Settles};
 use crate::handlers::handles::{HandleKind, handle_id, stream_id};
 use crate::recorder;
 use crate::shim::{CUDA_ERROR_NOT_FOUND, CUresult, DriverFn, RecordArg};
@@ -88,7 +89,61 @@ macro_rules! stream_create_shims {
     )*};
 }
 
-/// `cuStreamSynchronize` and `cuStreamDestroy`: one stream, one role.
+/// `cuStreamSynchronize`, which blocks the calling thread until the stream
+/// drains — and so is the moment every read-back queued into that stream
+/// finally means something (see [`crate::handlers::golden`]).
+macro_rules! stream_sync_shims {
+    ($($symbol:ident;)*) => {$(
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $symbol(hstream: CUstream) -> CUresult {
+            static REAL: DriverFn<unsafe extern "C" fn(CUstream) -> CUresult> =
+                DriverFn::new(concat!(stringify!($symbol), "\0").as_bytes());
+
+            let call = recorder::begin(stringify!($symbol));
+            let stream = stream_of(hstream);
+            let deep = call.deep(vec![stream_arg(hstream)]).consumes(Some(stream));
+            let result = match REAL.get() {
+                Some(real) => unsafe { real(hstream) },
+                None => CUDA_ERROR_NOT_FOUND,
+            };
+            let deep = if result == CUDA_SUCCESS {
+                unsafe { golden::settle(deep, Settles::Stream(stream)) }
+            } else {
+                deep
+            };
+            call.finish_deep(result, deep);
+            result
+        }
+    )*};
+}
+
+/// `cuEventSynchronize`, which blocks the calling thread until the event is
+/// reached, and so settles the read-backs its recording closed over.
+macro_rules! event_sync_shims {
+    ($($symbol:ident;)*) => {$(
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $symbol(hevent: CUevent) -> CUresult {
+            static REAL: DriverFn<unsafe extern "C" fn(CUevent) -> CUresult> =
+                DriverFn::new(concat!(stringify!($symbol), "\0").as_bytes());
+
+            let call = recorder::begin(stringify!($symbol));
+            let event = event_of(hevent);
+            let deep = call.deep(vec![event_arg(hevent)]).consumes(event);
+            let result = match REAL.get() {
+                Some(real) => unsafe { real(hevent) },
+                None => CUDA_ERROR_NOT_FOUND,
+            };
+            let deep = match event.filter(|_| result == CUDA_SUCCESS) {
+                Some(event) => unsafe { golden::settle(deep, Settles::Event(event)) },
+                None => deep,
+            };
+            call.finish_deep(result, deep);
+            result
+        }
+    )*};
+}
+
+/// `cuStreamDestroy`: one stream, ended.
 macro_rules! stream_shims {
     ($($symbol:ident ends_the_stream: $destroys:literal;)*) => {$(
         #[unsafe(no_mangle)]
@@ -203,15 +258,17 @@ macro_rules! event_record_shims {
                 Some(real) => unsafe { real(hevent, hstream $(, $flags)*) },
                 None => CUDA_ERROR_NOT_FOUND,
             };
+            if result == CUDA_SUCCESS {
+                golden::recorded(event_of(hevent), stream_of(hstream));
+            }
             call.finish_deep(result, deep);
             result
         }
     )*};
 }
 
-/// `cuEventSynchronize` and `cuEventDestroy`: one event, one role. These
-/// block the host thread rather than a stream, so they order nothing
-/// between streams and name no stream.
+/// `cuEventDestroy`: one event, ended. It names no stream, so it orders
+/// nothing between streams.
 macro_rules! event_shims {
     ($($symbol:ident ends_the_event: $destroys:literal;)*) => {$(
         #[unsafe(no_mangle)]
@@ -242,9 +299,12 @@ stream_create_shims! {
     cuStreamCreateWithPriority("flags", priority: c_int as "priority");
 }
 
+stream_sync_shims! {
+    cuStreamSynchronize;
+    cuStreamSynchronize_ptsz;
+}
+
 stream_shims! {
-    cuStreamSynchronize ends_the_stream: false;
-    cuStreamSynchronize_ptsz ends_the_stream: false;
     cuStreamDestroy ends_the_stream: true;
     cuStreamDestroy_v2 ends_the_stream: true;
 }
@@ -265,8 +325,11 @@ event_record_shims! {
     cuEventRecordWithFlags_ptsz(flags: c_uint);
 }
 
+event_sync_shims! {
+    cuEventSynchronize;
+}
+
 event_shims! {
-    cuEventSynchronize ends_the_event: false;
     cuEventDestroy ends_the_event: true;
     cuEventDestroy_v2 ends_the_event: true;
 }

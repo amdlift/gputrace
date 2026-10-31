@@ -120,6 +120,7 @@ impl CallScope {
 struct StagedPayload {
     role: &'static str,
     bytes: Vec<u8>,
+    source: Option<HandleId>,
 }
 
 /// One buffered call, with whatever the deep handler captured alongside it.
@@ -154,17 +155,14 @@ impl DeepCall {
         self.fidelity.is_some_and(|have| rank(have) >= rank(least))
     }
 
-    /// The call created `id`.
     pub fn produces(self, id: Option<HandleId>) -> Self {
         self.binds(id, HandleRole::Produced)
     }
 
-    /// The call used `id` without creating or ending it.
     pub fn consumes(self, id: Option<HandleId>) -> Self {
         self.binds(id, HandleRole::Consumed)
     }
 
-    /// The call ended `id`.
     pub fn destroys(self, id: Option<HandleId>) -> Self {
         self.binds(id, HandleRole::Destroyed)
     }
@@ -183,17 +181,26 @@ impl DeepCall {
     /// # Safety
     /// `src` must be readable for `len` bytes for the duration of the call.
     pub unsafe fn payload(self, role: &'static str, src: *const u8, len: usize) -> Self {
-        unsafe { self.stage(Fidelity::Replayable, role, src, len) }
+        unsafe { self.stage(Fidelity::Replayable, role, src, len, None) }
     }
 
     /// Capture `len` bytes of host memory at `src` as a golden value: what
     /// the driver answered, kept so a later replay can be diffed against it.
-    /// Only a golden capture pays for it.
+    /// `source` names the device allocation the bytes came from, which is the
+    /// only tie back to the read-back when the call capturing them is a later
+    /// synchronization rather than the copy itself. Only a golden capture
+    /// pays for it.
     ///
     /// # Safety
     /// `src` must be readable for `len` bytes for the duration of the call.
-    pub unsafe fn output(self, role: &'static str, src: *const u8, len: usize) -> Self {
-        unsafe { self.stage(Fidelity::Golden, role, src, len) }
+    pub unsafe fn output(
+        self,
+        role: &'static str,
+        src: *const u8,
+        len: usize,
+        source: Option<HandleId>,
+    ) -> Self {
+        unsafe { self.stage(Fidelity::Golden, role, src, len, source) }
     }
 
     /// # Safety
@@ -204,6 +211,7 @@ impl DeepCall {
         role: &'static str,
         src: *const u8,
         len: usize,
+        source: Option<HandleId>,
     ) -> Self {
         if len == 0 || src.is_null() || !self.wants(least) {
             return self;
@@ -211,6 +219,7 @@ impl DeepCall {
         self.payloads.push(StagedPayload {
             role,
             bytes: unsafe { std::slice::from_raw_parts(src, len) }.to_vec(),
+            source,
         });
         self
     }
@@ -237,6 +246,13 @@ pub fn bind_device(device: Option<u32>) {
 /// The device this thread's calls are currently attributed to.
 pub fn bound_device() -> Option<u32> {
     with_local(|local| local.device).flatten()
+}
+
+/// Whether this capture keeps what the device answered. A handler that has
+/// to hold a read-back's destination until a later call makes it valid asks
+/// here first, so nothing is held when nobody wants it.
+pub fn wants_golden() -> bool {
+    capture().is_some() && fidelity() == Fidelity::Golden
 }
 
 /// Finish the bundle: flush every thread's buffer, stop the writer, and
@@ -486,6 +502,7 @@ fn drain_to_bundle(queue: &Queue, bundle: BundleWriter) {
                             role: staged.role.to_owned(),
                             blob,
                             len: staged.bytes.len() as u64,
+                            source: staged.source,
                         });
                     }
                     segment.write(&call.record)?;

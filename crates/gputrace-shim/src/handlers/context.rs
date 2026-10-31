@@ -17,6 +17,7 @@ use std::sync::{LazyLock, RwLock};
 
 use gputrace_core::{ArgValue, Argument, HandleId};
 
+use crate::handlers::golden::{self, Settles};
 use crate::handlers::handles::{HandleKind, handle_id};
 use crate::recorder;
 use crate::shim::{CUDA_ERROR_NOT_FOUND, CUresult, DriverFn, RecordArg};
@@ -233,6 +234,35 @@ macro_rules! report_shims {
     )*};
 }
 
+/// `cuCtxSynchronize`, which blocks the calling thread until everything its
+/// context has been asked to do is done — including every read-back this
+/// thread staged.
+macro_rules! context_sync_shims {
+    ($($symbol:ident($($arg:ident: $ty:ty),*);)*) => {$(
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $symbol($($arg: $ty),*) -> CUresult {
+            static REAL: DriverFn<unsafe extern "C" fn($($ty),*) -> CUresult> =
+                DriverFn::new(concat!(stringify!($symbol), "\0").as_bytes());
+
+            let call = recorder::begin(stringify!($symbol));
+            let deep = call.deep(vec![$(
+                Argument::new(stringify!($arg), RecordArg::record(&$arg))
+            ),*]);
+            let result = match REAL.get() {
+                Some(real) => unsafe { real($($arg),*) },
+                None => CUDA_ERROR_NOT_FOUND,
+            };
+            let deep = if result == CUDA_SUCCESS {
+                unsafe { golden::settle(deep, Settles::Thread) }
+            } else {
+                deep
+            };
+            call.finish_deep(result, deep);
+            result
+        }
+    )*};
+}
+
 create_shims! {
     cuCtxCreate();
     cuCtxCreate_v2();
@@ -258,4 +288,9 @@ leave_shims! {
 
 report_shims! {
     cuCtxGetCurrent;
+}
+
+context_sync_shims! {
+    cuCtxSynchronize();
+    cuCtxSynchronize_v2(ctx: *mut c_void);
 }
