@@ -5,6 +5,9 @@
 //! them into one per-thread segment of the trace bundle. Nothing on the
 //! record path takes a lock or touches a global counter: ordering is
 //! recovered offline from the per-thread sequence and the monotonic stamp.
+//!
+//! Buffers are reachable from outside their owning thread, so exiting does
+//! not depend on every recording thread having exited first.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -31,6 +34,8 @@ pub const FIDELITY_ENV: &str = "GPUTRACE_FIDELITY";
 
 const CHUNK_RECORDS: usize = 256;
 const WRITER_IDLE_POLL: Duration = Duration::from_millis(2);
+/// How many times shutdown re-tries a buffer whose owner is mid-append.
+const STEAL_ATTEMPTS: usize = 64;
 
 /// One intercepted call, from the moment the shim is entered to the moment
 /// the real driver has answered.
@@ -72,13 +77,13 @@ impl CallScope {
     }
 }
 
-/// Finish the bundle: flush this thread's buffer, stop the writer, and write
-/// the manifest. Idempotent, and a no-op when capture never started.
+/// Finish the bundle: flush every thread's buffer, stop the writer, and
+/// write the manifest. Idempotent, and a no-op when capture never started.
 pub fn shutdown() {
     let Some(capture) = CAPTURE.get().and_then(Option::as_ref) else {
         return;
     };
-    with_local(|local| local.flush());
+    capture.flush_every_thread();
     capture.queue.shutdown.store(true, Ordering::Release);
     if let Some(writer) = capture.queue.writer.get() {
         writer.unpark();
@@ -157,9 +162,108 @@ impl Queue {
     }
 }
 
+/// One thread's buffer, held where another thread can reach it.
+///
+/// The pointer is the buffer's ownership token: the owning thread swaps it
+/// out, appends, and swaps it back, so exactly one party ever touches the
+/// `Vec`. That keeps the record path wait-free — an uncontended exchange on
+/// a line no other thread reads — while still letting shutdown collect what
+/// a thread has buffered without waiting for that thread to exit.
+struct Slot {
+    thread: ThreadId,
+    buffer: AtomicPtr<Vec<CallRecord>>,
+}
+
+// The box is the buffer's ownership token, not an extra container: the slot
+// has to hold a pointer another thread can exchange, which a bare `Vec` is not.
+#[allow(clippy::box_collection)]
+impl Slot {
+    fn new(thread: ThreadId) -> Self {
+        Self {
+            thread,
+            buffer: AtomicPtr::new(Box::into_raw(Box::new(Vec::with_capacity(CHUNK_RECORDS)))),
+        }
+    }
+
+    /// Take the buffer, leaving the slot empty. `None` means another party
+    /// holds it right now.
+    fn claim(&self) -> Option<Box<Vec<CallRecord>>> {
+        // Acquire pairs with the `publish` that last put the buffer back, so
+        // the records stored through that pointer are visible here.
+        let buffer = self.buffer.swap(ptr::null_mut(), Ordering::Acquire);
+        (!buffer.is_null()).then(|| unsafe { Box::from_raw(buffer) })
+    }
+
+    fn publish(&self, buffer: Box<Vec<CallRecord>>) {
+        self.buffer.store(Box::into_raw(buffer), Ordering::Release);
+    }
+
+    /// Take whatever the owning thread has buffered so far, for a shutdown
+    /// that cannot wait for that thread to exit. A slot is only ever null
+    /// for the few instructions its owner spends appending, so a bounded
+    /// yield is enough to catch a thread that is still recording.
+    fn steal(&self) -> Option<Vec<CallRecord>> {
+        for _ in 0..STEAL_ATTEMPTS {
+            if let Some(buffer) = self.claim() {
+                return Some(*buffer);
+            }
+            thread::yield_now();
+        }
+        None
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let buffer = *self.buffer.get_mut();
+        if !buffer.is_null() {
+            drop(unsafe { Box::from_raw(buffer) });
+        }
+    }
+}
+
 struct Capture {
     queue: Arc<Queue>,
     writer: Mutex<Option<JoinHandle<()>>>,
+    slots: Mutex<Vec<Arc<Slot>>>,
+}
+
+impl Capture {
+    fn slots(&self) -> std::sync::MutexGuard<'_, Vec<Arc<Slot>>> {
+        self.slots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Give a thread a slot of its own. Off the record path: once per thread.
+    fn register(&self, thread: ThreadId) -> Arc<Slot> {
+        let slot = Arc::new(Slot::new(thread));
+        self.slots().push(Arc::clone(&slot));
+        slot
+    }
+
+    fn deregister(&self, slot: &Arc<Slot>) {
+        self.slots().retain(|known| !Arc::ptr_eq(known, slot));
+    }
+
+    /// Queue every thread's buffered tail, including threads that are still
+    /// running: a thread that never exits before the process does would
+    /// otherwise never run the destructor that flushes it.
+    fn flush_every_thread(&self) {
+        let slots = self.slots().clone();
+        for slot in slots {
+            let Some(records) = slot.steal() else {
+                continue;
+            };
+            if records.is_empty() {
+                continue;
+            }
+            self.queue.push(Chunk {
+                thread: slot.thread,
+                records,
+            });
+        }
+    }
 }
 
 static CAPTURE: OnceLock<Option<Capture>> = OnceLock::new();
@@ -192,6 +296,7 @@ fn start() -> Option<Capture> {
     Some(Capture {
         queue,
         writer: Mutex::new(Some(handle)),
+        slots: Mutex::new(Vec::new()),
     })
 }
 
@@ -252,18 +357,17 @@ fn fidelity() -> Fidelity {
 
 struct Local {
     capture: &'static Capture,
-    thread: ThreadId,
+    slot: Arc<Slot>,
     seq: u64,
-    records: Vec<CallRecord>,
 }
 
 impl Local {
     fn start() -> Option<Self> {
+        let capture = capture()?;
         Some(Self {
-            capture: capture()?,
-            thread: ThreadId(current_thread_id()),
+            capture,
+            slot: capture.register(ThreadId(current_thread_id())),
             seq: 0,
-            records: Vec::with_capacity(CHUNK_RECORDS),
         })
     }
 
@@ -274,19 +378,34 @@ impl Local {
     }
 
     fn push(&mut self, record: CallRecord) {
-        self.records.push(record);
-        if self.records.len() >= CHUNK_RECORDS {
-            self.flush();
+        let mut buffer = self
+            .slot
+            .claim()
+            .unwrap_or_else(|| Box::new(Vec::with_capacity(CHUNK_RECORDS)));
+        buffer.push(record);
+        let full = buffer.len() >= CHUNK_RECORDS;
+        let chunk =
+            full.then(|| std::mem::replace(&mut *buffer, Vec::with_capacity(CHUNK_RECORDS)));
+        self.slot.publish(buffer);
+        if let Some(records) = chunk {
+            self.hand_over(records);
         }
     }
 
     fn flush(&mut self) {
-        if self.records.is_empty() {
+        let Some(mut buffer) = self.slot.claim() else {
             return;
+        };
+        let records = std::mem::take(&mut *buffer);
+        self.slot.publish(buffer);
+        if !records.is_empty() {
+            self.hand_over(records);
         }
-        let records = std::mem::replace(&mut self.records, Vec::with_capacity(CHUNK_RECORDS));
+    }
+
+    fn hand_over(&self, records: Vec<CallRecord>) {
         self.capture.queue.push(Chunk {
-            thread: self.thread,
+            thread: self.slot.thread,
             records,
         });
     }
@@ -295,6 +414,7 @@ impl Local {
 impl Drop for Local {
     fn drop(&mut self) {
         self.flush();
+        self.capture.deregister(&self.slot);
     }
 }
 
@@ -323,8 +443,9 @@ extern "C" fn flush_at_exit() {
 
 fn register_exit_hook() {
     // The target process is what dies, so the bundle has to be finished from
-    // inside it. glibc runs a thread's TLS destructors before its atexit
-    // handlers, so every buffer this thread filled is already queued by then.
+    // inside it. `_exit`, `abort` and a fatal signal all bypass `atexit`:
+    // those runs lose the bundle by construction, which is why shutdown must
+    // never be the only thing standing between the target and its own exit.
     unsafe { atexit(flush_at_exit) };
 }
 
