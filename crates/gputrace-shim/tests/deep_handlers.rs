@@ -3,6 +3,8 @@
 //! it, and a host-to-device copy carries its payload into the blob store.
 
 use gputrace_core::{ArgValue, BlobId, CallRecord, Fidelity, HandleId, HandleRole, TraceBundle};
+use std::collections::HashSet;
+
 use gputrace_testkit::{CaptureRun, Harness, target_bin};
 
 fn records(bundle: &TraceBundle) -> Vec<CallRecord> {
@@ -148,4 +150,104 @@ fn a_handles_capture_records_identity_without_the_payload() {
         bound(&record(&records, "cuMemAlloc_v2"), HandleRole::Produced)
     );
     assert!(copy.payloads.is_empty());
+}
+
+/// What `shared_alloc` prints: the two device pointers it allocated.
+fn reported_pointers(run: &CaptureRun) -> (u64, u64) {
+    let mut lines = run.stdout().lines();
+    let mut pointer = |label: &str| {
+        let line = lines.next().unwrap_or_default();
+        let value = line
+            .strip_prefix(label)
+            .unwrap_or_else(|| panic!("expected {label}…, got {line:?}"));
+        u64::from_str_radix(value.trim_start_matches("0x"), 16).expect("device pointer")
+    };
+    (pointer("shared="), pointer("private="))
+}
+
+fn copies_into(records: &[CallRecord], pointer: u64) -> Vec<&CallRecord> {
+    records
+        .iter()
+        .filter(|record| {
+            record.function == "cuMemcpyHtoD_v2"
+                && record
+                    .args
+                    .iter()
+                    .any(|arg| arg.name == "dstDevice" && arg.value == ArgValue::DevicePtr(pointer))
+        })
+        .collect()
+}
+
+/// The identity rule that makes a trace replayable at all: an allocation is
+/// one handle no matter which host thread touches it. Nothing coordinates
+/// between those threads, so this is the test that would catch an id handed
+/// out by a per-thread counter.
+#[test]
+fn threads_that_share_an_allocation_record_it_as_one_handle() {
+    let run = run("shared_alloc");
+    let (shared, private) = reported_pointers(&run);
+    let bundle = run.bundle().expect("bundle");
+    let records = records(&bundle);
+
+    let produced = |pointer| {
+        let alloc = records
+            .iter()
+            .find(|record| {
+                record.function == "cuMemAlloc_v2"
+                    && record
+                        .args
+                        .iter()
+                        .any(|arg| arg.value == ArgValue::DevicePtr(pointer))
+            })
+            .expect("an allocation of this pointer");
+        bound(alloc, HandleRole::Produced)
+    };
+    assert_ne!(
+        produced(shared),
+        produced(private),
+        "two allocations are two handles"
+    );
+
+    let copies = copies_into(&records, shared);
+    assert_eq!(copies.len(), 4, "one copy per worker thread");
+    for copy in copies {
+        assert_eq!(bound(copy, HandleRole::Consumed), produced(shared));
+    }
+}
+
+#[test]
+fn identical_payloads_are_stored_once_however_many_threads_sent_them() {
+    let run = run("shared_alloc");
+    let (shared, private) = reported_pointers(&run);
+    let bundle = run.bundle().expect("bundle");
+    let records = records(&bundle);
+
+    let blobs_of = |pointer| {
+        copies_into(&records, pointer)
+            .into_iter()
+            .map(|copy| payload(copy, "host_to_device"))
+            .collect::<Vec<_>>()
+    };
+
+    let shared_blobs = blobs_of(shared);
+    assert_eq!(shared_blobs.len(), 4);
+    let (blob, len) = shared_blobs[0].clone();
+    assert!(
+        shared_blobs.iter().all(|sent| *sent == (blob.clone(), len)),
+        "four threads sent the same 16 bytes: {shared_blobs:?}"
+    );
+    assert_eq!(bundle.read_blob(&blob).expect("blob"), [0xa5u8; 16]);
+
+    let private_blobs: HashSet<BlobId> = blobs_of(private)
+        .into_iter()
+        .map(|(blob, _)| blob)
+        .collect();
+    assert_eq!(private_blobs.len(), 4, "four threads sent four payloads");
+
+    let stored = std::fs::read_dir(bundle.path().join("blobs")).expect("blob store");
+    assert_eq!(
+        stored.count(),
+        5,
+        "the store holds one file per distinct payload"
+    );
 }
