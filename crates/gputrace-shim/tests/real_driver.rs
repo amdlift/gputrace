@@ -9,7 +9,6 @@
 
 use std::path::PathBuf;
 
-use gputrace_core::{CallRecord, TraceBundle};
 use gputrace_testkit::{Harness, target_bin};
 
 /// Where the real driver is, overridable because a distribution that does not
@@ -33,14 +32,6 @@ fn real_libcuda() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("libcuda.so.1"))
 }
 
-fn records(bundle: &TraceBundle) -> Vec<CallRecord> {
-    bundle
-        .threads()
-        .iter()
-        .flat_map(|summary| bundle.read_segment(summary.thread).expect("segment"))
-        .collect()
-}
-
 #[test]
 #[ignore = "needs a real NVIDIA driver and a GPU; see docs/real-gpu-smoke.md"]
 fn capturing_a_real_cuda_program_produces_a_bundle() {
@@ -59,8 +50,7 @@ fn capturing_a_real_cuda_program_produces_a_bundle() {
         run.stdout()
     );
 
-    let bundle = run.bundle().expect("a bundle");
-    let records = records(&bundle);
+    let records = run.records().expect("records");
     for expected in [
         "cuInit",
         "cuCtxCreate_v4",
@@ -76,6 +66,7 @@ fn capturing_a_real_cuda_program_produces_a_bundle() {
         );
     }
 
+    let bundle = run.bundle().expect("a bundle");
     let environment = &bundle.manifest().environment;
     assert!(
         environment
@@ -104,19 +95,15 @@ fn a_call_resolved_by_dlopening_the_real_driver_escapes_capture() {
         .expect("run target");
     assert!(run.status().success(), "target failed: {}", run.stderr());
 
-    let observed = |key: &str| {
-        run.stdout()
-            .lines()
-            .find_map(|line| line.strip_prefix(&format!("{key}=")))
-            .unwrap_or_else(|| panic!("no {key} in: {}", run.stdout()))
-            .to_owned()
-    };
-    assert_eq!(observed("dlsym"), "true");
-    assert_eq!(observed("dlsym_is_interposer"), "false");
-    assert_eq!(observed("call"), "0", "the real driver answered the call");
+    assert_eq!(run.observed("dlsym"), "true");
+    assert_eq!(run.observed("dlsym_is_interposer"), "false");
+    assert_eq!(
+        run.observed("call"),
+        "0",
+        "the real driver answered the call"
+    );
 
-    let bundle = run.bundle().expect("a bundle");
-    let records = records(&bundle);
+    let records = run.records().expect("records");
     assert!(
         records.iter().any(|record| record.function == "cuInit"),
         "the same target's global-scope call is captured, so capture was live"

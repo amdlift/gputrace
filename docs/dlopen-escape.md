@@ -14,9 +14,14 @@ stacks measured here it is the *primary* path, not a corner case.
 `dlopened_driver` fixture makes one call each way in one process: `cuInit`
 bound from the global scope, and `cuDeviceGetCount` resolved from the
 driver's own handle. The first is recorded; the second reaches the driver,
-returns its answer, and leaves nothing in the bundle. `real_driver.rs` runs
-the same fixture against NVIDIA's `libcuda.so.1` with the same result, so
-this is the dynamic linker's scoping rule and not an artefact of the stub.
+returns its answer, and leaves nothing in the bundle.
+
+That test runs the stub the way a real driver is loaded — `LD_PRELOAD` holds
+the interposer alone and the stub is pulled in by the target's own `dlopen`,
+not preloaded beside us — so the configuration it proves is the one real
+programs are in. The `#[ignore]`d twin in `real_driver.rs` runs the same
+fixture against NVIDIA's `libcuda.so.1` and gets the same result, so nothing
+here depends on the stub at all: it is the dynamic linker's scoping rule.
 
 `dlsym(handle, name)` searches that object and its dependencies. `LD_PRELOAD`
 interposition works by putting our object *earlier in the global scope*; a
@@ -64,10 +69,13 @@ processes: three calls each — `cuDeviceGet`, `cuDeviceGetAttribute`,
 scope. Every kernel launch, every memcpy, all of the inference: invisible.
 
 **PyTorch was not measured** — no CUDA-enabled PyTorch on this machine, and
-building one was out of proportion to the question. It is a `libcudart` plus
-`libcublas`/`libcublasLt` consumer, both of which were measured here and both
-of which escape, so the expectation is a near-empty bundle. To settle it,
-capture any `torch.cuda` script and count the records:
+building one (no substitutable binary in the cache) was out of proportion to
+the question. This is the one claim here that is reasoned rather than
+observed, and it should be read that way: `libtorch_cuda.so` links
+`libcudart` and `libcublas`/`libcublasLt`, the two libraries measured above,
+and both escape, so the expectation is a near-empty bundle — but expectation
+is not evidence. To settle it on a machine that has torch, capture any
+`torch.cuda` script and count the records:
 
 ```sh
 gputrace capture -o trace -- python -c \
@@ -76,18 +84,59 @@ gputrace capture -o trace -- python -c \
 
 ## Reproducing
 
-The two tests in the repo are the durable part; the rest is a shell session.
+The two tests in the repo are the durable part. The rest was a shell session,
+and these are the whole of it — no measurement below rests on anything larger.
 
 ```sh
 cargo test -p gputrace-shim --test dlopen_escape
 cargo test -p gputrace-shim --test real_driver -- --ignored   # needs a GPU
 ```
 
-To watch a library take symbols off the handle, build the trivial Runtime
-program above and run it with `LD_DEBUG=symbols LD_DEBUG_OUTPUT=log`, then
-look for `cu*` lookups whose only `lookup in file=` line names
-`libcuda.so.1`: a global lookup lists every object in scope before it, a
-`dlsym` on a handle lists one.
+Reading `LD_DEBUG=symbols` output is the trick the rest depends on. Run
+anything with `LD_DEBUG=symbols LD_DEBUG_OUTPUT=log`, then look at the
+`lookup in file=` lines for one `cu*` name: **a global lookup lists every
+object in scope** (the executable, then our interposer, then the driver),
+**a `dlsym` on a handle lists exactly one**, the file the handle names.
+
+The Runtime program, which needs no `cu*` of its own to demonstrate the
+escape:
+
+```c
+// rt_probe.cu — nvcc -o rt_probe rt_probe.cu   (and --cudart shared)
+#include <cstdio>
+#include <cuda_runtime.h>
+int main() {
+    void *d; unsigned long long host = 0xdeadbeef01020304ULL, back = 0;
+    if (cudaMalloc(&d, sizeof host)) return 1;
+    cudaMemcpy(d, &host, sizeof host, cudaMemcpyHostToDevice);
+    cudaMemcpy(&back, d, sizeof back, cudaMemcpyDeviceToHost);
+    printf("received=%llx\n", back);
+    return cudaFree(d);
+}
+```
+
+```sh
+gputrace capture -o trace -- ./rt_probe   # prints the round trip, writes no bundle
+```
+
+And the one that attributes a `dlsym` burst to the library doing it — point it
+at `libcudart.so.12`, `libcublasLt.so.12`, or any other suspect:
+
+```c
+// probe_dlopen.c — cc -o probe_dlopen probe_dlopen.c -ldl
+#include <dlfcn.h>
+#include <stdio.h>
+int main(int argc, char **argv) {
+    void *h = dlopen(argv[1], RTLD_NOW);
+    printf("dlopen=%p\n", h);
+    return h ? 0 : 1;
+}
+```
+
+```sh
+LD_DEBUG=symbols LD_DEBUG_OUTPUT=log ./probe_dlopen /path/to/libcublasLt.so.12
+grep 'symbol=cu' log.* | grep libcuda.so.1   # 32 lines, one per entry point taken
+```
 
 ## The options, with costs
 
@@ -116,15 +165,24 @@ target gets *is* us and every `dlsym` on it resolves to a trampoline with no
 loading mechanism to get right, auditing applies process-wide and is easy to
 get subtly wrong, and our resolver must still reach the real driver — which
 works, because it opens a concrete path that `la_objsearch` can let through.
-Worth keeping as the fallback if `dlsym` interposition proves unstable.
+Portability is worse than the `dlsym` hook: `LD_AUDIT` is a glibc interface
+with no musl equivalent, so a musl target would lose capture entirely rather
+than degrade. Record path: untouched, for the same reason as above — the
+redirection happens once, at load. Worth keeping as the fallback if `dlsym`
+interposition proves unstable.
 
-**Shim the Runtime API as well.** Rejected on its own terms: `nvcc` links
-`cudart` statically by default, so the `cuda*` symbols are not in the dynamic
-symbol table of a stock binary at all — the probe above proves it — and
-ADR-0002 chose the driver surface deliberately.
+**Intercept the Runtime API as well.** Rejected on its own terms: `nvcc`
+links `cudart` statically by default, so the `cuda*` symbols are not in the
+dynamic symbol table of a stock binary at all — the probe above proves it —
+and ADR-0002 chose the driver surface deliberately. Portability: it would
+also tie us to a surface that churns every CUDA release, which is the cost
+ADR-0002 declined to pay. Record path: it would *add* a second recording
+surface above the first, with the de-duplication problem that implies —
+the only option here that puts new work on the path ADR-0004 protects.
 
 **Do nothing and narrow the claim.** Costs nothing to build and costs the
 project its motivating case: the stacks we most want to capture are exactly
-the ones that escape. If we take this, the README and ADR-0003 have to say
-so plainly, because "no call path escapes" would be false in front of
-evaluators.
+the ones that escape. Portability and record path are both unaffected, which
+is the only argument in its favour. If we take this, the README and ADR-0003
+have to say so plainly, because "no call path escapes" would be false in
+front of evaluators.

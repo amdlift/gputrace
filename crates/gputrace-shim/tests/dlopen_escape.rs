@@ -2,14 +2,20 @@
 //! driver and `dlsym`s its handle reaches the real entry point directly, and
 //! nothing about that lookup passes through the interposer (#13, ADR-0007).
 //!
+//! The stub is left out of `LD_PRELOAD` here, so it is loaded the way a real
+//! `libcuda.so.1` is — by the target's own `dlopen`, into its own scope. The
+//! escape is the dynamic linker's scoping rule, not an artefact of preloading
+//! the stub beside the interposer.
+//!
 //! These tests pin the escape as it is today. They are the regression guard
 //! that will have to change if we ever close the path.
 
-use gputrace_core::{CallRecord, TraceBundle};
-use gputrace_testkit::{CaptureRun, Harness, target_bin};
+use gputrace_testkit::{CaptureRun, Harness, stub_libcuda, target_bin};
 
 fn run() -> CaptureRun {
-    let harness = Harness::new().expect("harness");
+    let harness = Harness::new()
+        .expect("harness")
+        .against(stub_libcuda().expect("stub libcuda"));
     let run = harness
         .run(target_bin("dlopened_driver"), &[])
         .expect("run target");
@@ -17,30 +23,14 @@ fn run() -> CaptureRun {
     run
 }
 
-/// One `key=value` line of what the fixture observed.
-fn observed<'a>(run: &'a CaptureRun, key: &str) -> &'a str {
-    run.stdout()
-        .lines()
-        .find_map(|line| line.strip_prefix(&format!("{key}=")))
-        .unwrap_or_else(|| panic!("no {key} in: {}", run.stdout()))
-}
-
-fn records(bundle: &TraceBundle) -> Vec<CallRecord> {
-    bundle
-        .threads()
-        .iter()
-        .flat_map(|summary| bundle.read_segment(summary.thread).expect("segment"))
-        .collect()
-}
-
 #[test]
 fn a_dlsym_on_the_drivers_own_handle_hands_back_the_driver_not_the_interposer() {
     let run = run();
 
-    assert_eq!(observed(&run, "dlopen"), "true");
-    assert_eq!(observed(&run, "dlsym"), "true");
+    assert_eq!(run.observed("dlopen"), "true");
+    assert_eq!(run.observed("dlsym"), "true");
     assert_eq!(
-        observed(&run, "dlsym_is_interposer"),
+        run.observed("dlsym_is_interposer"),
         "false",
         "a lookup against a library handle searches that object, so LD_PRELOAD \
          has nothing to shadow"
@@ -51,9 +41,9 @@ fn a_dlsym_on_the_drivers_own_handle_hands_back_the_driver_not_the_interposer() 
 fn the_call_reaches_the_driver_and_is_not_recorded() {
     let run = run();
 
-    assert_eq!(observed(&run, "call"), "0");
+    assert_eq!(run.observed("call"), "0");
     assert_eq!(
-        observed(&run, "devices"),
+        run.observed("devices"),
         "1",
         "the target got the driver's own answer"
     );
@@ -63,16 +53,15 @@ fn the_call_reaches_the_driver_and_is_not_recorded() {
         "the driver answered the escaped call"
     );
 
-    let bundle = run.bundle().expect("bundle");
-    let recorded = records(&bundle);
+    let records = run.records().expect("records");
     assert!(
-        recorded.iter().any(|record| record.function == "cuInit"),
-        "the same target's global-scope call is captured, so capture was live: {recorded:?}"
+        records.iter().any(|record| record.function == "cuInit"),
+        "the same target's global-scope call is captured, so capture was live: {records:?}"
     );
     assert!(
-        !recorded
+        !records
             .iter()
             .any(|record| record.function == "cuDeviceGetCount"),
-        "the escaped call is absent from the bundle: {recorded:?}"
+        "the escaped call is absent from the bundle: {records:?}"
     );
 }

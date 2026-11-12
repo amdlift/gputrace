@@ -17,14 +17,11 @@ unsafe extern "C" {
 }
 
 const RTLD_NOW: c_int = 2;
-const RTLD_LOCAL: c_int = 0;
 
 /// Resolve a driver entry point from the global scope.
 pub fn driver_symbol(name: &str) -> Option<*mut c_void> {
-    let symbol = CString::new(name).expect("symbol name");
     // RTLD_DEFAULT is a null handle on glibc and musl alike.
-    let address = unsafe { dlsym(std::ptr::null_mut(), symbol.as_ptr()) };
-    (!address.is_null()).then_some(address)
+    lookup(std::ptr::null_mut(), name)
 }
 
 /// A driver library the target opened for itself, as a program that
@@ -34,19 +31,28 @@ pub struct DlopenedDriver {
 }
 
 impl DlopenedDriver {
-    /// `dlopen` the library at `path` into the target's own scope.
+    /// Open the library at `path`. `dlopen` adds it to the *local* scope by
+    /// default, which is the whole point: lookups against the handle it
+    /// returns never consult the global scope an interposer lives in.
     pub fn open(path: impl AsRef<OsStr>) -> Option<Self> {
         let path = CString::new(path.as_ref().as_bytes()).expect("library path");
-        let handle = unsafe { dlopen(path.as_ptr(), RTLD_NOW | RTLD_LOCAL) };
+        let handle = unsafe { dlopen(path.as_ptr(), RTLD_NOW) };
         (!handle.is_null()).then_some(Self { handle })
     }
 
     /// Resolve `name` within this library, bypassing the global scope.
+    ///
+    /// The handle is deliberately never `dlclose`d: the addresses handed out
+    /// here outlive this struct, and a fixture holds them until it exits.
     pub fn symbol(&self, name: &str) -> Option<*mut c_void> {
-        let symbol = CString::new(name).expect("symbol name");
-        let address = unsafe { dlsym(self.handle, symbol.as_ptr()) };
-        (!address.is_null()).then_some(address)
+        lookup(self.handle, name)
     }
+}
+
+fn lookup(handle: *mut c_void, name: &str) -> Option<*mut c_void> {
+    let symbol = CString::new(name).expect("symbol name");
+    let address = unsafe { dlsym(handle, symbol.as_ptr()) };
+    (!address.is_null()).then_some(address)
 }
 
 /// Declare a struct of driver entry points resolved from the global scope.
