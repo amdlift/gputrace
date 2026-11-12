@@ -141,7 +141,7 @@ target calls cuMemAlloc_v2
 ## Development
 
 ```sh
-cargo test --workspace     # 119 tests, no GPU required
+cargo test --workspace     # 121 tests, no GPU required
 cargo clippy --workspace --all-targets
 cargo fmt
 ```
