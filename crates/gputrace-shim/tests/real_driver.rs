@@ -91,3 +91,40 @@ fn capturing_a_real_cuda_program_produces_a_bundle() {
         "the manifest must record a real GPU: {environment:?}"
     );
 }
+
+/// The escape `dlopen_escape.rs` pins against the stub, confirmed against the
+/// driver NVIDIA ships: nothing about the stub makes the lookup bypass the
+/// interposer, the dynamic linker's scoping rules do (#13, ADR-0007).
+#[test]
+#[ignore = "needs a real NVIDIA driver and a GPU; see docs/real-gpu-smoke.md"]
+fn a_call_resolved_by_dlopening_the_real_driver_escapes_capture() {
+    let harness = Harness::new().expect("harness").against(real_libcuda());
+    let run = harness
+        .run(target_bin("dlopened_driver"), &[])
+        .expect("run target");
+    assert!(run.status().success(), "target failed: {}", run.stderr());
+
+    let observed = |key: &str| {
+        run.stdout()
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}=")))
+            .unwrap_or_else(|| panic!("no {key} in: {}", run.stdout()))
+            .to_owned()
+    };
+    assert_eq!(observed("dlsym"), "true");
+    assert_eq!(observed("dlsym_is_interposer"), "false");
+    assert_eq!(observed("call"), "0", "the real driver answered the call");
+
+    let bundle = run.bundle().expect("a bundle");
+    let records = records(&bundle);
+    assert!(
+        records.iter().any(|record| record.function == "cuInit"),
+        "the same target's global-scope call is captured, so capture was live"
+    );
+    assert!(
+        !records
+            .iter()
+            .any(|record| record.function == "cuDeviceGetCount"),
+        "the escaped call is absent from the bundle: {records:?}"
+    );
+}
