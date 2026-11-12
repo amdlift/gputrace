@@ -2,7 +2,7 @@
 
 A security-research interposer for AI-accelerator APIs. It sits between an application and the accelerator's user-space driver, recording the API calls that cross that boundary — without distorting the thing that makes GPUs interesting: massive parallelism.
 
-`gputrace capture` runs an unmodified program under an `LD_PRELOAD` interposer that shadows the CUDA Driver API, records every `cu*` call, then forwards it to the real driver so the program runs normally. The result is a portable, inspectable **trace bundle** that later phases replay, mutate, and fuzz.
+`gputrace capture` runs an unmodified program under an `LD_PRELOAD` interposer that shadows the CUDA Driver API, records the `cu*` calls that reach it, then forwards each one to the real driver so the program runs normally. The result is a portable, inspectable **trace bundle** that later phases replay, mutate, and fuzz. Which calls reach it is the live question — see [Interception coverage](#interception-coverage) before relying on a capture.
 
 ## Status
 
@@ -119,15 +119,20 @@ trace/
 
 ## How it works
 
-**Both resolution paths are closed.** The interposer exports the `cu*` symbols *and* hooks `cuGetProcAddress`, so neither a program that links the driver directly nor one that resolves entry points through the dispatch table (as the CUDA Runtime does) escapes capture ([ADR-0003](docs/adr/0003-dual-interception-symbols-and-cugetprocaddress.md)).
+<a id="interception-coverage"></a>
+
+**Two resolution paths are closed; a third is open.** The interposer exports the `cu*` symbols *and* hooks `cuGetProcAddress`, so a program that links the driver directly and one that resolves entry points through the dispatch table are both captured ([ADR-0003](docs/adr/0003-dual-interception-symbols-and-cugetprocaddress.md)). A program that `dlopen`s `libcuda.so.1` and calls `dlsym` on that handle is not: the lookup searches that object alone, so `LD_PRELOAD` has nothing to shadow and the dispatch-table hook is never asked.
 
 ```
 target calls cuMemAlloc_v2
   ├─ linked directly      ──> our exported symbol ──┐
-  └─ via cuGetProcAddress ──> our trampoline      ──┤
-                                                    ├─> record
-                                                    └─> forward to the real driver
+  ├─ via cuGetProcAddress ──> our trampoline      ──┤
+  │                                                 ├─> record
+  │                                                 └─> forward to the real driver
+  └─ dlopen + dlsym       ──> the real driver, unrecorded
 ```
+
+**This is not a corner case, and it is the current limit of what capture sees.** The CUDA Runtime takes `cuGetProcAddress_v2` off a `dlopen`ed handle and resolves everything through the driver's own table; cuBLASLt takes 32 entry points the same way, `cuLaunchKernel` among them. A stock `cudaMalloc`/`cudaMemcpy` program under `gputrace capture` therefore writes **no bundle at all** while doing real work on the GPU. Capturing a Runtime, PyTorch or llama.cpp workload today will record little or nothing; a program that uses the Driver API directly is captured in full. The evidence is in [docs/dlopen-escape.md](docs/dlopen-escape.md), the decision to close it by interposing `dlsym` in [ADR-0007](docs/adr/0007-close-the-dlopen-escape-by-interposing-dlsym.md), and the work in [#15](https://github.com/amdlift/gputrace/issues/15).
 
 **682 `cu*` entry points** are covered: 676 auto-generated pass-through trampolines plus hand-written deep handlers for the security-relevant subset (memory, context, module load, kernel launch, stream and event lifecycle). The generated output is vendored, so downstream builds need no CUDA headers and no `bindgen` ([ADR-0005](docs/adr/0005-vendored-bindgen-output-for-header-free-builds.md)).
 
@@ -136,7 +141,7 @@ target calls cuMemAlloc_v2
 ## Development
 
 ```sh
-cargo test --workspace     # 119 tests, no GPU required
+cargo test --workspace     # 121 tests, no GPU required
 cargo clippy --workspace --all-targets
 cargo fmt
 ```
