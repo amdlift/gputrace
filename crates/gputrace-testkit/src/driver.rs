@@ -1,21 +1,57 @@
 //! How a fixture target reaches the CUDA Driver API.
 //!
-//! Symbols are looked up in the process's global scope, the same scope a
-//! PLT-bound `cu*` call resolves against, so an `LD_PRELOAD`ed interposer
-//! shadows them exactly as it shadows a real CUDA program's calls. Resolving
-//! this way keeps fixtures free of any link-time CUDA library.
+//! Two ways, because they bind differently. [`driver_symbol`] looks a symbol
+//! up in the process's global scope, the same scope a PLT-bound `cu*` call
+//! resolves against, so an `LD_PRELOAD`ed interposer shadows it exactly as it
+//! shadows a real CUDA program's calls. [`DlopenedDriver`] instead opens one
+//! concrete library and searches that object alone — the lookup never consults
+//! the global scope, so `LD_PRELOAD` has nothing to shadow. Resolving either
+//! way keeps fixtures free of any link-time CUDA library.
 
-use std::ffi::{CString, c_char, c_void};
+use std::ffi::{CString, OsStr, c_char, c_int, c_void};
+use std::os::unix::ffi::OsStrExt;
 
 unsafe extern "C" {
+    fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
     fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
 }
 
+const RTLD_NOW: c_int = 2;
+
 /// Resolve a driver entry point from the global scope.
 pub fn driver_symbol(name: &str) -> Option<*mut c_void> {
-    let symbol = CString::new(name).expect("symbol name");
     // RTLD_DEFAULT is a null handle on glibc and musl alike.
-    let address = unsafe { dlsym(std::ptr::null_mut(), symbol.as_ptr()) };
+    lookup(std::ptr::null_mut(), name)
+}
+
+/// A driver library the target opened for itself, as a program that
+/// `dlopen`s `libcuda.so.1` rather than linking it does.
+pub struct DlopenedDriver {
+    handle: *mut c_void,
+}
+
+impl DlopenedDriver {
+    /// Open the library at `path`. `dlopen` adds it to the *local* scope by
+    /// default, which is the whole point: lookups against the handle it
+    /// returns never consult the global scope an interposer lives in.
+    pub fn open(path: impl AsRef<OsStr>) -> Option<Self> {
+        let path = CString::new(path.as_ref().as_bytes()).expect("library path");
+        let handle = unsafe { dlopen(path.as_ptr(), RTLD_NOW) };
+        (!handle.is_null()).then_some(Self { handle })
+    }
+
+    /// Resolve `name` within this library, bypassing the global scope.
+    ///
+    /// The handle is deliberately never `dlclose`d: the addresses handed out
+    /// here outlive this struct, and a fixture holds them until it exits.
+    pub fn symbol(&self, name: &str) -> Option<*mut c_void> {
+        lookup(self.handle, name)
+    }
+}
+
+fn lookup(handle: *mut c_void, name: &str) -> Option<*mut c_void> {
+    let symbol = CString::new(name).expect("symbol name");
+    let address = unsafe { dlsym(handle, symbol.as_ptr()) };
     (!address.is_null()).then_some(address)
 }
 
