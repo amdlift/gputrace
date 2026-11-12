@@ -37,3 +37,12 @@ This runs real work on a real GPU. Prefer a GPU that does not drive your
 display — see `docs/choosing-a-capture-gpu.md`. The fixture is tiny (one 8-byte
 round trip, no kernel launch), so the risk is small, but the habit matters for
 everything built on top of capture.
+
+## The second test
+
+`a_call_resolved_by_dlopening_the_real_driver_escapes_capture` is `#[ignore]`d
+in the same file and runs the same way. It confirms against NVIDIA's own
+driver what `tests/dlopen_escape.rs` pins against the stub: a `cu*` resolved
+by `dlsym` on a `dlopen`ed driver handle reaches the driver and is never
+recorded. It asserts the *absence* of capture, so it will have to be inverted
+when #15 closes that path. See `docs/dlopen-escape.md`.

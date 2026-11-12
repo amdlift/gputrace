@@ -7,7 +7,7 @@ use std::process::{Command, ExitStatus};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use gputrace_core::TraceBundle;
+use gputrace_core::{CallRecord, TraceBundle};
 use tempfile::TempDir;
 
 use crate::{TestkitError, artifacts};
@@ -142,5 +142,25 @@ impl CaptureRun {
     /// The trace bundle the interposer wrote, for assertion.
     pub fn bundle(&self) -> Result<TraceBundle, TestkitError> {
         Ok(TraceBundle::open(&self.bundle)?)
+    }
+
+    /// Every record the interposer wrote, across host threads. Order is
+    /// meaningful only within a thread (ADR-0004), so a caller asserts on
+    /// presence and counts rather than position.
+    pub fn records(&self) -> Result<Vec<CallRecord>, TestkitError> {
+        let bundle = self.bundle()?;
+        let mut records = Vec::new();
+        for summary in bundle.threads() {
+            records.extend(bundle.read_segment(summary.thread)?);
+        }
+        Ok(records)
+    }
+
+    /// One `key=value` line of what a fixture reported on stdout.
+    pub fn observed(&self, key: &str) -> &str {
+        self.stdout
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}=")))
+            .unwrap_or_else(|| panic!("no {key} in: {}", self.stdout))
     }
 }

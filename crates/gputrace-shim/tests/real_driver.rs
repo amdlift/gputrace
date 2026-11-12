@@ -9,7 +9,6 @@
 
 use std::path::PathBuf;
 
-use gputrace_core::{CallRecord, TraceBundle};
 use gputrace_testkit::{Harness, target_bin};
 
 /// Where the real driver is, overridable because a distribution that does not
@@ -33,14 +32,6 @@ fn real_libcuda() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("libcuda.so.1"))
 }
 
-fn records(bundle: &TraceBundle) -> Vec<CallRecord> {
-    bundle
-        .threads()
-        .iter()
-        .flat_map(|summary| bundle.read_segment(summary.thread).expect("segment"))
-        .collect()
-}
-
 #[test]
 #[ignore = "needs a real NVIDIA driver and a GPU; see docs/real-gpu-smoke.md"]
 fn capturing_a_real_cuda_program_produces_a_bundle() {
@@ -59,8 +50,7 @@ fn capturing_a_real_cuda_program_produces_a_bundle() {
         run.stdout()
     );
 
-    let bundle = run.bundle().expect("a bundle");
-    let records = records(&bundle);
+    let records = run.records().expect("records");
     for expected in [
         "cuInit",
         "cuCtxCreate_v4",
@@ -76,6 +66,7 @@ fn capturing_a_real_cuda_program_produces_a_bundle() {
         );
     }
 
+    let bundle = run.bundle().expect("a bundle");
     let environment = &bundle.manifest().environment;
     assert!(
         environment
@@ -89,5 +80,38 @@ fn capturing_a_real_cuda_program_produces_a_bundle() {
             .iter()
             .any(|device| device.compute_capability.is_some()),
         "the manifest must record a real GPU: {environment:?}"
+    );
+}
+
+/// The escape `dlopen_escape.rs` pins against the stub, confirmed against the
+/// driver NVIDIA ships: nothing about the stub makes the lookup bypass the
+/// interposer, the dynamic linker's scoping rules do (#13, ADR-0007).
+#[test]
+#[ignore = "needs a real NVIDIA driver and a GPU; see docs/real-gpu-smoke.md"]
+fn a_call_resolved_by_dlopening_the_real_driver_escapes_capture() {
+    let harness = Harness::new().expect("harness").against(real_libcuda());
+    let run = harness
+        .run(target_bin("dlopened_driver"), &[])
+        .expect("run target");
+    assert!(run.status().success(), "target failed: {}", run.stderr());
+
+    assert_eq!(run.observed("dlsym"), "true");
+    assert_eq!(run.observed("dlsym_is_interposer"), "false");
+    assert_eq!(
+        run.observed("call"),
+        "0",
+        "the real driver answered the call"
+    );
+
+    let records = run.records().expect("records");
+    assert!(
+        records.iter().any(|record| record.function == "cuInit"),
+        "the same target's global-scope call is captured, so capture was live"
+    );
+    assert!(
+        !records
+            .iter()
+            .any(|record| record.function == "cuDeviceGetCount"),
+        "the escaped call is absent from the bundle: {records:?}"
     );
 }

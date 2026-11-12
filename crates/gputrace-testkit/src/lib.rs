@@ -9,7 +9,7 @@ mod driver;
 mod harness;
 
 pub use artifacts::{interposer, stub_libcuda, target_bin};
-pub use driver::driver_symbol;
+pub use driver::{DlopenedDriver, driver_symbol};
 pub use harness::{BUNDLE_ENV, CaptureRun, Harness, LIBCUDA_ENV, STUB_LOG_ENV};
 
 #[derive(Debug, thiserror::Error)]
